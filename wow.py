@@ -166,6 +166,12 @@ class WoW(commands.Cog):
         variations = {clean_name}
         if clean_name.startswith("the "): variations.add(clean_name[4:])
         variations.add(f"the {clean_name}")
+        # Try inserting "the" after each word to catch missing articles mid-name
+        # e.g. "flask of magister" -> "flask of the magister"
+        words = clean_name.split()
+        for i in range(1, len(words)):
+            if words[i] != "the":
+                variations.add(" ".join(words[:i] + ["the"] + words[i:]))
         for v in list(variations):
             if "-" in v:
                 variations.add(v.replace("-", " "))
@@ -197,10 +203,9 @@ class WoW(commands.Cog):
                 item_results = await self.search_items(session, item_name)
                 if not item_results: return await ctx.send(f"❌ Item **{item_name}** not found.")
                 item_results = await self.enrich_item_results(session, item_results)
+                async def show_item_price(interaction, index):
+                    await self.display_item_price(interaction, item_results[index], realm, session)
                 if len(item_results) > 1:
-                    async def show_item_price(interaction, index):
-                        async with aiohttp.ClientSession() as btn_session:
-                            await self.display_item_price(interaction, item_results[index], realm, btn_session)
                     embed = discord.Embed(title="💰 Multiple matches found", description="Select an item below:", color=discord.Color.gold())
                     return await ctx.send(embed=embed, view=ItemSelectionView(item_results, show_item_price))
                 await self.display_item_price(ctx, item_results[0], realm, session)
@@ -239,7 +244,11 @@ class WoW(commands.Cog):
                 if auction["item"]["id"] == item["id"]: prices.append(auction.get("unit_price") or auction.get("buyout"))
         if not prices: return await context.send(f"❌ No auctions found for **{item['name']}**.")
         lowest, avg = min(prices) / 10000, sum(prices) / len(prices) / 10000
-        embed = discord.Embed(title=f"💰 {item['name']}", color=discord.Color.gold())
+        TIER_NAMES = {1: "Crafted (Q1)", 2: "Crafted (Q2)", 3: "Crafted (Q3)"}
+        tier = item.get("tier")
+        quality_str = TIER_NAMES.get(tier) if isinstance(tier, int) else tier
+        title = f"💰 {item['name']}" + (f" — {quality_str}" if quality_str else "")
+        embed = discord.Embed(title=title, color=discord.Color.gold())
         icon = await self.get_item_icon(session, item["id"])
         if icon: embed.set_thumbnail(url=icon)
         embed.add_field(name="Details", value=f"**Lowest:** {lowest:,.2f}g\n**Avg:** {avg:,.2f}g\n**Listings:** {len(prices):,}", inline=False)
