@@ -160,13 +160,19 @@ class WoW(commands.Cog):
     async def enrich_item_results(self, session: aiohttp.ClientSession, items: List[Dict]) -> List[Dict]:
         item_details = await asyncio.gather(*(self.get_item_by_id(session, item["id"]) for item in items))
         enriched_items = []
+        seen_keys = set()
         for item, details in zip(items, item_details):
             merged = dict(item)
             if details:
                 for key in ("tier", "item_level", "item_class_id", "modified_crafting_category_id"):
                     if details.get(key) is not None:
                         merged[key] = details[key]
-            enriched_items.append(merged)
+            
+            # Use id and tier as a unique key for an item version
+            unique_key = (merged.get("id"), merged.get("tier"))
+            if unique_key not in seen_keys:
+                enriched_items.append(merged)
+                seen_keys.add(unique_key)
         return enriched_items
 
     async def get_guild_roster(self, session: aiohttp.ClientSession, realm: str, guild: str) -> List[Dict]:
