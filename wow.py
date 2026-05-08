@@ -162,40 +162,34 @@ class WoW(commands.Cog):
         params = {"namespace": "static-us", "locale": "en_US"}
         data = await self.safe_get(session, url, headers=headers, params=params)
         if data:
-            # Check for crafted quality first, then gathered quality tier
-            crafted_quality = data.get("crafted_quality")
+            preview_item = data.get("preview_item", {})
+            crafted_quality = data.get("crafted_quality") or preview_item.get("crafted_quality")
+            
             tier = None
             if isinstance(crafted_quality, dict):
                 tier = crafted_quality.get("tier")
+            
             if tier is None:
+                # Check quality.tier (used for some gathered reagents)
                 quality = data.get("quality", {})
-                if isinstance(quality, dict):
+                if isinstance(quality, dict) and "tier" in quality:
                     tier = quality.get("tier")
+            
+            if tier is None:
+                # Some items have it in the preview_item's quality field
+                preview_quality = preview_item.get("quality", {})
+                if isinstance(preview_quality, dict) and "tier" in preview_quality:
+                    tier = preview_quality.get("tier")
 
             return {
                 "id": data["id"],
                 "name": data["name"],
                 "tier": tier,
-                "item_level": data.get("level") or data.get("preview_item", {}).get("level", {}).get("value", 0),
+                "item_level": data.get("level") or preview_item.get("level", {}).get("value", 0),
                 "item_class_id": data.get("item_class", {}).get("id"),
-                "modified_crafting_category_id": data.get("modified_crafting", {}).get("category", {}).get("id"),
+                "modified_crafting_category_id": data.get("modified_crafting", {}).get("category", {}).get("id") or preview_item.get("modified_crafting", {}).get("category", {}).get("id"),
             }
         return None
-
-    async def enrich_item_results(self, session: aiohttp.ClientSession, items: List[Dict]) -> List[Dict]:
-        item_details = await asyncio.gather(*(self.get_item_by_id(session, item["id"]) for item in items))
-        enriched_items, seen_keys = [], set()
-        for item, details in zip(items, item_details):
-            merged = dict(item)
-            if details:
-                for key in ("tier", "item_level", "item_class_id", "modified_crafting_category_id"):
-                    if details.get(key) is not None:
-                        merged[key] = details[key]
-            # Use id as unique key for enrichment step
-            if merged["id"] not in seen_keys:
-                enriched_items.append(merged)
-                seen_keys.add(merged["id"])
-        return enriched_items
 
     async def search_items(self, session: aiohttp.ClientSession, item_name: str) -> List[Dict]:
         token = await self.get_access_token(session)
@@ -248,31 +242,31 @@ class WoW(commands.Cog):
         if not best_matches:
             best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:15]
 
-        # ENRICHMENT: Get full details (tier, ilvl) to differentiate variants
+        # ENRICHMENT: Get full details
         enriched_matches = await self.enrich_item_results(session, best_matches)
 
-        # DEDUPLICATION: 
-        # 1. Distinct Quality Tiers (Q1/Q2/Q3) are ALWAYS kept.
-        # 2. If tiers are missing, items with DIFFERENT item levels are kept (likely tiers).
-        # 3. Items with same name, same tier (or none), and same ilvl are merged.
+        # DEDUPLICATION:
         unique_results = {}
         for item in enriched_matches:
             name_lower = item["name"].lower()
             tier = item.get("tier")
             ilvl = item.get("item_level", 0)
+            class_id = item.get("item_class_id")
+            cat_id = item.get("modified_crafting_category_id")
             
-            # Key includes ilvl if tier is missing to catch "hidden" qualities
+            # If it has an explicit tier, keep it as a unique variant
             if tier:
                 key = (name_lower, tier)
             else:
-                key = (name_lower, "no-tier", ilvl)
+                # For non-tiered items, we deduplicate by name, ilvl, and category
+                # This catches the "Meaty Haunch" duplicate issue while allowing
+                # alloys/ingots to stay separate if they have different ilvls or categories.
+                key = (name_lower, "no-tier", ilvl, cat_id)
             
-            # Prefer newer IDs if duplicate
             if key not in unique_results or item["id"] > unique_results[key]["id"]:
                 unique_results[key] = item
 
         candidates = list(unique_results.values())
-        # Sort by name length first, then tier/ilvl
         candidates.sort(key=lambda x: (len(x["name"]), x.get("tier") or 0, x.get("item_level") or 0))
         return candidates[:15]
 
