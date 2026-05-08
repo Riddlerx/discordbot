@@ -71,7 +71,7 @@ class WoW(commands.Cog):
         self.guild_vault_message_id: Optional[int] = None
         self.last_content: Optional[str] = None
 
-        self.blizzard_semaphore = asyncio.Semaphore(2)
+        self.blizzard_semaphore = asyncio.Semaphore(10)
         self.auto_update_task: Optional[asyncio.Task] = None
 
         self.load_state()
@@ -375,7 +375,8 @@ class WoW(commands.Cog):
             {
                 "name": m["character"]["name"],
                 "realm": m["character"]["realm"]["slug"],
-                "class_id": m["character"]["playable_class"]["id"]
+                "class_id": m["character"]["playable_class"]["id"],
+                "level": m["character"]["level"]
             }
             for m in data.get("members", [])
         ]
@@ -508,14 +509,23 @@ class WoW(commands.Cog):
         return data.get("price", 0) / 10000 if data else 0
 
     async def build_guild_vault_text(self, session: aiohttp.ClientSession) -> str:
-        guild = await self.get_guild_roster(session, self.guild_realm, self.guild_name)
-        if not guild: return "⚠️ Error fetching guild roster."
+        all_members = await self.get_guild_roster(session, self.guild_realm, self.guild_name)
+        if not all_members: return "⚠️ Error fetching guild roster."
 
-        semaphore = asyncio.Semaphore(2)
+        # Filter for max level characters only (assuming level 80 for TWW)
+        # This significantly reduces API calls for large guilds with lots of alts/inactive low-levels
+        guild = [m for m in all_members if m.get("level", 0) >= 80]
+        
+        # If no level 80s found, fallback to all members (might be a different expansion or level cap)
+        if not guild:
+            guild = all_members[:100] # Cap at 100 to prevent 5-minute waits
+
+        semaphore = asyncio.Semaphore(5) # Higher concurrency for roster fetching
         async def sem_fetch(char):
             async with semaphore:
                 result = await self.fetch_char_stats(session, char)
-                await asyncio.sleep(0.2)
+                # Reduced sleep to speed up the process while staying safe
+                await asyncio.sleep(0.05)
                 return result
 
         tasks = [sem_fetch(char) for char in guild]
