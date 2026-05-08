@@ -191,6 +191,21 @@ class WoW(commands.Cog):
             }
         return None
 
+    async def enrich_item_results(self, session: aiohttp.ClientSession, items: List[Dict]) -> List[Dict]:
+        item_details = await asyncio.gather(*(self.get_item_by_id(session, item["id"]) for item in items))
+        enriched_items, seen_keys = [], set()
+        for item, details in zip(items, item_details):
+            merged = dict(item)
+            if details:
+                for key in ("tier", "item_level", "item_class_id", "modified_crafting_category_id"):
+                    if details.get(key) is not None:
+                        merged[key] = details[key]
+            # Use id as unique key for enrichment step
+            if merged["id"] not in seen_keys:
+                enriched_items.append(merged)
+                seen_keys.add(merged["id"])
+        return enriched_items
+
     async def search_items(self, session: aiohttp.ClientSession, item_name: str) -> List[Dict]:
         token = await self.get_access_token(session)
         if not token:
