@@ -197,9 +197,10 @@ class WoW(commands.Cog):
                 item_results = await self.search_items(session, item_name)
                 if not item_results: return await ctx.send(f"❌ Item **{item_name}** not found.")
                 item_results = await self.enrich_item_results(session, item_results)
-                async def show_item_price(interaction, index):
-                    await self.display_item_price(interaction, item_results[index], realm, session)
                 if len(item_results) > 1:
+                    async def show_item_price(interaction, index):
+                        async with aiohttp.ClientSession() as btn_session:
+                            await self.display_item_price(interaction, item_results[index], realm, btn_session)
                     embed = discord.Embed(title="💰 Multiple matches found", description="Select an item below:", color=discord.Color.gold())
                     return await ctx.send(embed=embed, view=ItemSelectionView(item_results, show_item_price))
                 await self.display_item_price(ctx, item_results[0], realm, session)
