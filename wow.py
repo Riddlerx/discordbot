@@ -162,8 +162,17 @@ class WoW(commands.Cog):
         params = {"namespace": "static-us", "locale": "en_US"}
         data = await self.safe_get(session, url, headers=headers, params=params)
         if data:
+            # Check for crafted quality first, then gathered quality tier
             crafted_quality = data.get("crafted_quality")
-            tier = crafted_quality.get("tier") if isinstance(crafted_quality, dict) else data.get("quality", {}).get("tier")
+            tier = None
+            if isinstance(crafted_quality, dict):
+                tier = crafted_quality.get("tier")
+            if tier is None:
+                # Some reagents have quality: { ..., "tier": 1 }
+                quality = data.get("quality", {})
+                if isinstance(quality, dict):
+                    tier = quality.get("tier")
+
             return {
                 "id": data["id"],
                 "name": data["name"],
@@ -337,7 +346,7 @@ class WoW(commands.Cog):
                 headers = {"Authorization": f"Bearer {token}"}
                 realm_data = await self.safe_get(session, url, headers=headers, params={"namespace": "dynamic-us", "locale": "en_US"})
 
-        variants_sorted = sorted(variants, key=lambda x: x.get("tier") or 0)
+        variants_sorted = sorted(variants, key=lambda x: (x.get("tier") or 0, x["id"]))
 
         name = variants_sorted[0]['name']
         location = "Global" if is_commodity else (realm.title() if realm else "Unknown Realm")
@@ -349,11 +358,10 @@ class WoW(commands.Cog):
             embed.set_thumbnail(url=icon)
 
         any_found = False
-        for item in variants_sorted:
+        for i, item in enumerate(variants_sorted):
             item_id = item["id"]
             prices = commodity_prices.get(item_id, [])
             
-            # If not a commodity, check realm data
             if not prices and realm_data:
                 for auction in realm_data.get("auctions", []):
                     if auction["item"]["id"] == item_id:
@@ -363,15 +371,17 @@ class WoW(commands.Cog):
 
             tier = item.get("tier")
             
-            # If only 1 variant or it's a non-tiered commodity, use "Current Price"
+            # Label logic
             if len(variants_sorted) == 1:
                 field_name = "Current Price"
             else:
-                field_name = TIER_LABELS.get(tier, f"Quality {tier}" if tier else "Standard")
+                # If tier is missing but we have multiples, infer Q1/Q2/Q3 from order
+                if tier:
+                    field_name = TIER_LABELS.get(tier, f"Quality {tier}")
+                else:
+                    field_name = f"Quality {i+1}"
                 
-            if not prices:
-                embed.add_field(name=field_name, value="No listings found", inline=True)
-            else:
+            if prices:
                 lowest = min(prices) / 10000
                 avg = sum(prices) / len(prices) / 10000
                 embed.add_field(
@@ -380,6 +390,9 @@ class WoW(commands.Cog):
                     inline=True
                 )
                 any_found = True
+            elif len(variants_sorted) > 1:
+                # For multi-variant items, show 'No listings' to keep the grid consistent
+                embed.add_field(name=field_name, value="No listings found", inline=True)
 
         if not any_found:
             msg = f"❌ No auctions found for **{variants_sorted[0]['name']}**."
