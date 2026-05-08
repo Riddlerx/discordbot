@@ -314,17 +314,18 @@ class WoW(commands.Cog):
             variants = [variants]
 
         commodities = await self.get_commodities_cached(session)
+        commodity_auctions = commodities.get("auctions", [])
         
-        # Check if any variant is a commodity (region-wide)
-        is_commodity = False
-        commodity_item_ids = {a["item"]["id"] for a in commodities.get("auctions", [])[:100000]} # Sample for speed if huge, but usually fine
-        # Better: just check if our item id exists in commodities at all
-        for v in variants:
-            for auction in commodities.get("auctions", []):
-                if auction["item"]["id"] == v["id"]:
-                    is_commodity = True
-                    break
-            if is_commodity: break
+        # Map prices by item ID once to avoid redundant scans of 500k+ auctions
+        # We only care about the items in our variants list
+        target_ids = {v["id"] for v in variants}
+        commodity_prices = {}
+        for a in commodity_auctions:
+            item_id = a["item"]["id"]
+            if item_id in target_ids:
+                commodity_prices.setdefault(item_id, []).append(a["unit_price"])
+
+        is_commodity = any(vid in commodity_prices for vid in target_ids)
 
         realm_data = None
         if realm and not is_commodity:
@@ -349,13 +350,24 @@ class WoW(commands.Cog):
 
         any_found = False
         for item in variants_sorted:
-            prices = await self._get_prices_for_item(item, commodities, realm_data)
+            item_id = item["id"]
+            prices = commodity_prices.get(item_id, [])
+            
+            # If not a commodity, check realm data
+            if not prices and realm_data:
+                for auction in realm_data.get("auctions", []):
+                    if auction["item"]["id"] == item_id:
+                        price = auction.get("unit_price") or auction.get("buyout")
+                        if price:
+                            prices.append(price)
+
             tier = item.get("tier")
             
-            if len(variants_sorted) == 1 and tier is None:
+            # If only 1 variant or it's a non-tiered commodity, use "Current Price"
+            if len(variants_sorted) == 1:
                 field_name = "Current Price"
             else:
-                field_name = TIER_LABELS.get(tier, "Standard") if isinstance(tier, int) else "Standard"
+                field_name = TIER_LABELS.get(tier, f"Quality {tier}" if tier else "Standard")
                 
             if not prices:
                 embed.add_field(name=field_name, value="No listings found", inline=True)
