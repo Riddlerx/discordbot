@@ -168,7 +168,6 @@ class WoW(commands.Cog):
             if isinstance(crafted_quality, dict):
                 tier = crafted_quality.get("tier")
             if tier is None:
-                # Some reagents have quality: { ..., "tier": 1 }
                 quality = data.get("quality", {})
                 if isinstance(quality, dict):
                     tier = quality.get("tier")
@@ -177,7 +176,7 @@ class WoW(commands.Cog):
                 "id": data["id"],
                 "name": data["name"],
                 "tier": tier,
-                "item_level": data.get("level"),
+                "item_level": data.get("level") or data.get("preview_item", {}).get("level", {}).get("value", 0),
                 "item_class_id": data.get("item_class", {}).get("id"),
                 "modified_crafting_category_id": data.get("modified_crafting", {}).get("category", {}).get("id"),
             }
@@ -192,10 +191,10 @@ class WoW(commands.Cog):
                 for key in ("tier", "item_level", "item_class_id", "modified_crafting_category_id"):
                     if details.get(key) is not None:
                         merged[key] = details[key]
-            unique_key = (merged.get("id"), merged.get("tier"))
-            if unique_key not in seen_keys:
+            # Use id as unique key for enrichment step
+            if merged["id"] not in seen_keys:
                 enriched_items.append(merged)
-                seen_keys.add(unique_key)
+                seen_keys.add(merged["id"])
         return enriched_items
 
     async def search_items(self, session: aiohttp.ClientSession, item_name: str) -> List[Dict]:
@@ -227,9 +226,7 @@ class WoW(commands.Cog):
                     item_id = item_data["id"]
                     if item_id not in all_matches:
                         name = item_data.get("name", {}).get("en_US", "")
-                        # Check for tier in search results (might be missing here)
-                        tier = item_data.get("quality", {}).get("tier")
-                        all_matches[item_id] = {"id": item_id, "name": name, "tier": tier}
+                        all_matches[item_id] = {"id": item_id, "name": name}
 
         if not all_matches:
             return []
@@ -249,31 +246,35 @@ class WoW(commands.Cog):
         max_score = len(keywords)
         best_matches = [i for i in all_matches.values() if match_score(i) == max_score]
         if not best_matches:
-            best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:10]
+            best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:15]
 
-        # ENRICHMENT: The search API often omits the tier. We need to fetch details 
-        # for these specific candidates to know if they are tiered before deduplicating.
+        # ENRICHMENT: Get full details (tier, ilvl) to differentiate variants
         enriched_matches = await self.enrich_item_results(session, best_matches)
 
-        # DEDUPLICATION: If multiple IDs have the same name and NO TIER, keep only one.
-        # This prevents "Meaty Haunch" from showing multiple variants while keeping Flask tiers.
+        # DEDUPLICATION: 
+        # 1. Distinct Quality Tiers (Q1/Q2/Q3) are ALWAYS kept.
+        # 2. If tiers are missing, items with DIFFERENT item levels are kept (likely tiers).
+        # 3. Items with same name, same tier (or none), and same ilvl are merged.
         unique_results = {}
         for item in enriched_matches:
             name_lower = item["name"].lower()
             tier = item.get("tier")
-            # If it has a tier, it's a distinct quality variant
+            ilvl = item.get("item_level", 0)
+            
+            # Key includes ilvl if tier is missing to catch "hidden" qualities
             if tier:
                 key = (name_lower, tier)
             else:
-                key = (name_lower, "no-tier")
+                key = (name_lower, "no-tier", ilvl)
             
-            # Prefer newer IDs if duplicates exist for the same name+tier combo
+            # Prefer newer IDs if duplicate
             if key not in unique_results or item["id"] > unique_results[key]["id"]:
                 unique_results[key] = item
 
         candidates = list(unique_results.values())
-        candidates.sort(key=lambda x: (len(x["name"]), x.get("tier") or 0))
-        return candidates[:15] # Return more so the command logic can group them
+        # Sort by name length first, then tier/ilvl
+        candidates.sort(key=lambda x: (len(x["name"]), x.get("tier") or 0, x.get("item_level") or 0))
+        return candidates[:15]
 
     @commands.command()
     async def price(self, ctx, *, search: str):
