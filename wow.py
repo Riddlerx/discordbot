@@ -227,6 +227,7 @@ class WoW(commands.Cog):
                     item_id = item_data["id"]
                     if item_id not in all_matches:
                         name = item_data.get("name", {}).get("en_US", "")
+                        # Check for tier in search results (might be missing here)
                         tier = item_data.get("quality", {}).get("tier")
                         all_matches[item_id] = {"id": item_id, "name": name, "tier": tier}
 
@@ -244,12 +245,29 @@ class WoW(commands.Cog):
             name_lower = item["name"].lower()
             return sum(1 for kw in keywords if keyword_in_name(kw, name_lower))
 
+        # Filter for items that match best
         max_score = len(keywords)
-        full_matches = [i for i in all_matches.values() if match_score(i) == max_score]
-        candidates = full_matches if full_matches else sorted(
-            all_matches.values(), key=match_score, reverse=True
-        )[:20]
+        best_matches = [i for i in all_matches.values() if match_score(i) == max_score]
+        if not best_matches:
+            best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:10]
 
+        # DEDUPLICATION: If multiple IDs have the same name and NO TIER, keep only one.
+        # This prevents "Meaty Haunch" from showing multiple variants.
+        unique_results = {}
+        for item in best_matches:
+            name_lower = item["name"].lower()
+            tier = item.get("tier")
+            # If it has a tier, it's a distinct quality variant
+            if tier:
+                key = (name_lower, tier)
+            else:
+                key = (name_lower, "no-tier")
+            
+            # Prefer newer IDs (higher number) if duplicates exist
+            if key not in unique_results or item["id"] > unique_results[key]["id"]:
+                unique_results[key] = item
+
+        candidates = list(unique_results.values())
         candidates.sort(key=lambda x: len(x["name"]))
         return candidates[:5]
 
