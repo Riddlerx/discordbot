@@ -630,34 +630,16 @@ class WoW(commands.Cog):
                     return await ctx.send(f"❌ Item **{item_name}** not found.")
 
                 item_results = await self.enrich_item_results(session, item_results)
-                display_name = item_results[0]["name"]
-                unique_names = list(set(r["name"] for r in item_results))
-                
-                # Get color based on highest quality in results
-                quality_colors = {
-                    0: discord.Color.light_grey(), # Poor
-                    1: discord.Color.default(),    # Common
-                    2: discord.Color.green(),      # Uncommon
-                    3: discord.Color.blue(),       # Rare
-                    4: discord.Color.purple(),     # Epic
-                    5: discord.Color.orange(),     # Legendary
-                }
-                max_quality = max((r.get("tier") or 0 for r in item_results), default=1)
-                embed_color = quality_colors.get(max_quality, discord.Color.gold())
 
-                embed = discord.Embed(
-                    title=f"💰 {display_name}" if len(unique_names) == 1 else "💰 Search Results",
-                    color=embed_color
-                )
+                if len(item_results) > 1:
+                    embed = discord.Embed(title="💰 Multiple matches found", color=discord.Color.gold())
+                    description = "\n".join([f"{i+1}. {r['name']} (Tier {r.get('tier', 0)})" for i, r in enumerate(item_results[:10])])
+                    embed.description = f"Please be more specific:\n{description}"
+                    return await ctx.send(embed=embed)
 
-                # Add icon if single item match
-                if len(item_results) == 1:
-                    icon_url = await self.get_item_icon(session, item_results[0]["id"])
-                    if icon_url:
-                        embed.set_thumbnail(url=icon_url)
-                
-                commodities = await self.get_commodities_cached(session)
-                realm_data = None
+                # Proceed with single result...
+                item = item_results[0]
+                display_name = item["name"]
                 if realm:
                     realm_key = realm.lower().replace(" ", "").replace("-", "").replace("'", "")
                     realm_id = REALMS.get(realm_key)
