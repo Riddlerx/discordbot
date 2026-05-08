@@ -247,7 +247,7 @@ class WoW(commands.Cog):
     @commands.command()
     async def price(self, ctx, *, search: str):
         async with ctx.typing():
-            item_name, realm = search, "frostmourne"
+            item_name, realm = search, self.guild_realm
             if ":" in search:
                 parts = search.rsplit(":", 1)
                 item_name, realm = parts[0].strip(), parts[1].strip()
@@ -326,7 +326,11 @@ class WoW(commands.Cog):
 
         variants_sorted = sorted(variants, key=lambda x: x.get("tier") or 0)
 
-        embed = discord.Embed(title=f"💰 {variants_sorted[0]['name']}", color=discord.Color.gold())
+        title = f"💰 {variants_sorted[0]['name']}"
+        if realm:
+            title += f" ({realm.title()})"
+            
+        embed = discord.Embed(title=title, color=discord.Color.gold())
         icon = await self.get_item_icon(session, variants_sorted[0]["id"])
         if icon:
             embed.set_thumbnail(url=icon)
