@@ -314,8 +314,20 @@ class WoW(commands.Cog):
             variants = [variants]
 
         commodities = await self.get_commodities_cached(session)
+        
+        # Check if any variant is a commodity (region-wide)
+        is_commodity = False
+        commodity_item_ids = {a["item"]["id"] for a in commodities.get("auctions", [])[:100000]} # Sample for speed if huge, but usually fine
+        # Better: just check if our item id exists in commodities at all
+        for v in variants:
+            for auction in commodities.get("auctions", []):
+                if auction["item"]["id"] == v["id"]:
+                    is_commodity = True
+                    break
+            if is_commodity: break
+
         realm_data = None
-        if realm:
+        if realm and not is_commodity:
             realm_key = realm.lower().replace(" ", "").replace("-", "").replace("'", "")
             realm_id = REALMS.get(realm_key)
             if realm_id:
@@ -326,9 +338,9 @@ class WoW(commands.Cog):
 
         variants_sorted = sorted(variants, key=lambda x: x.get("tier") or 0)
 
-        title = f"💰 {variants_sorted[0]['name']}"
-        if realm:
-            title += f" ({realm.title()})"
+        name = variants_sorted[0]['name']
+        location = "Global" if is_commodity else (realm.title() if realm else "Unknown Realm")
+        title = f"💰 {name} ({location})"
             
         embed = discord.Embed(title=title, color=discord.Color.gold())
         icon = await self.get_item_icon(session, variants_sorted[0]["id"])
@@ -339,7 +351,12 @@ class WoW(commands.Cog):
         for item in variants_sorted:
             prices = await self._get_prices_for_item(item, commodities, realm_data)
             tier = item.get("tier")
-            field_name = TIER_LABELS.get(tier, "Standard") if isinstance(tier, int) else "Standard"
+            
+            if len(variants_sorted) == 1 and tier is None:
+                field_name = "Current Price"
+            else:
+                field_name = TIER_LABELS.get(tier, "Standard") if isinstance(tier, int) else "Standard"
+                
             if not prices:
                 embed.add_field(name=field_name, value="No listings found", inline=True)
             else:
