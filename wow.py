@@ -170,13 +170,11 @@ class WoW(commands.Cog):
                 tier = crafted_quality.get("tier")
             
             if tier is None:
-                # Check quality.tier (used for some gathered reagents)
                 quality = data.get("quality", {})
                 if isinstance(quality, dict) and "tier" in quality:
                     tier = quality.get("tier")
             
             if tier is None:
-                # Some items have it in the preview_item's quality field
                 preview_quality = preview_item.get("quality", {})
                 if isinstance(preview_quality, dict) and "tier" in preview_quality:
                     tier = preview_quality.get("tier")
@@ -200,7 +198,6 @@ class WoW(commands.Cog):
                 for key in ("tier", "item_level", "item_class_id", "modified_crafting_category_id"):
                     if details.get(key) is not None:
                         merged[key] = details[key]
-            # Use id as unique key for enrichment step
             if merged["id"] not in seen_keys:
                 enriched_items.append(merged)
                 seen_keys.add(merged["id"])
@@ -251,39 +248,14 @@ class WoW(commands.Cog):
             name_lower = item["name"].lower()
             return sum(1 for kw in keywords if keyword_in_name(kw, name_lower))
 
-        # Filter for items that match best
         max_score = len(keywords)
         best_matches = [i for i in all_matches.values() if match_score(i) == max_score]
         if not best_matches:
             best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:15]
 
-        # ENRICHMENT: Get full details
         enriched_matches = await self.enrich_item_results(session, best_matches)
-
-        # DEDUPLICATION:
-        unique_results = {}
-        for item in enriched_matches:
-            name_lower = item["name"].lower()
-            tier = item.get("tier")
-            ilvl = item.get("item_level", 0)
-            class_id = item.get("item_class_id")
-            cat_id = item.get("modified_crafting_category_id")
-            
-            # If it has an explicit tier, keep it as a unique variant
-            if tier:
-                key = (name_lower, tier)
-            else:
-                # For non-tiered items, we deduplicate by name, ilvl, and category
-                # This catches the "Meaty Haunch" duplicate issue while allowing
-                # alloys/ingots to stay separate if they have different ilvls or categories.
-                key = (name_lower, "no-tier", ilvl, cat_id)
-            
-            if key not in unique_results or item["id"] > unique_results[key]["id"]:
-                unique_results[key] = item
-
-        candidates = list(unique_results.values())
-        candidates.sort(key=lambda x: (len(x["name"]), x.get("tier") or 0, x.get("item_level") or 0))
-        return candidates[:15]
+        enriched_matches.sort(key=lambda x: (len(x["name"]), -x["id"]))
+        return enriched_matches[:25]
 
     @commands.command()
     async def price(self, ctx, *, search: str):
@@ -297,12 +269,12 @@ class WoW(commands.Cog):
                 item_results = await self.search_items(session, item_name)
                 if not item_results:
                     return await ctx.send(f"❌ Item **{item_name}** not found.")
-                item_results = await self.enrich_item_results(session, item_results)
 
             name_groups: Dict[str, list] = {}
             for item in item_results:
                 name_groups.setdefault(item["name"], []).append(item)
-            unique_names = list(name_groups.keys())
+            
+            unique_names = sorted(name_groups.keys(), key=lambda n: abs(len(n) - len(item_name)))
 
             async def on_name_selected(interaction: discord.Interaction, index: int):
                 selected_name = unique_names[index]
@@ -311,12 +283,17 @@ class WoW(commands.Cog):
                     await self.display_item_price(interaction, variants, realm, new_session)
 
             if len(unique_names) > 1:
+                exact_match = next((n for n in unique_names if n.lower() == item_name.lower()), None)
+                if exact_match:
+                    async with aiohttp.ClientSession() as new_session:
+                        return await self.display_item_price(ctx, name_groups[exact_match], realm, new_session)
+
                 embed = discord.Embed(
                     title="💰 Multiple matches found",
                     description="Select an item below:",
                     color=discord.Color.gold()
                 )
-                display_items = [{"name": n} for n in unique_names]
+                display_items = [{"name": n} for n in unique_names[:5]]
                 return await ctx.send(embed=embed, view=ItemSelectionView(display_items, on_name_selected))
 
             async with aiohttp.ClientSession() as new_session:
@@ -337,19 +314,6 @@ class WoW(commands.Cog):
             self.commodities_cache_time = now
         return self.commodities_cache or {}
 
-    async def _get_prices_for_item(self, item: Dict, commodities: Dict, realm_data: Optional[Dict]) -> list:
-        prices = []
-        for auction in commodities.get("auctions", []):
-            if auction["item"]["id"] == item["id"]:
-                prices.append(auction["unit_price"])
-        if realm_data:
-            for auction in realm_data.get("auctions", []):
-                if auction["item"]["id"] == item["id"]:
-                    price = auction.get("unit_price") or auction.get("buyout")
-                    if price:
-                        prices.append(price)
-        return prices
-
     async def display_item_price(self, context, variants, realm, session):
         if not isinstance(variants, list):
             variants = [variants]
@@ -357,8 +321,6 @@ class WoW(commands.Cog):
         commodities = await self.get_commodities_cached(session)
         commodity_auctions = commodities.get("auctions", [])
         
-        # Map prices by item ID once to avoid redundant scans of 500k+ auctions
-        # We only care about the items in our variants list
         target_ids = {v["id"] for v in variants}
         commodity_prices = {}
         for a in commodity_auctions:
@@ -378,36 +340,40 @@ class WoW(commands.Cog):
                 headers = {"Authorization": f"Bearer {token}"}
                 realm_data = await self.safe_get(session, url, headers=headers, params={"namespace": "dynamic-us", "locale": "en_US"})
 
-        variants_sorted = sorted(variants, key=lambda x: (x.get("tier") or 0, x["id"]))
+        active_variants = []
+        for item in variants:
+            item_id = item["id"]
+            prices = commodity_prices.get(item_id, [])
+            if not prices and realm_data:
+                for auction in realm_data.get("auctions", []):
+                    if auction["item"]["id"] == item_id:
+                        p = auction.get("unit_price") or auction.get("buyout")
+                        if p: prices.append(p)
+            
+            if prices:
+                item["prices"] = prices
+                active_variants.append(item)
 
-        name = variants_sorted[0]['name']
+        display_variants = active_variants if active_variants else variants
+        display_variants.sort(key=lambda x: (x.get("tier") or 0, x["id"]))
+
+        name = display_variants[0]['name']
         location = "Global" if is_commodity else (realm.title() if realm else "Unknown Realm")
         title = f"💰 {name} ({location})"
             
         embed = discord.Embed(title=title, color=discord.Color.gold())
-        icon = await self.get_item_icon(session, variants_sorted[0]["id"])
+        icon = await self.get_item_icon(session, display_variants[0]["id"])
         if icon:
             embed.set_thumbnail(url=icon)
 
         any_found = False
-        for i, item in enumerate(variants_sorted):
-            item_id = item["id"]
-            prices = commodity_prices.get(item_id, [])
-            
-            if not prices and realm_data:
-                for auction in realm_data.get("auctions", []):
-                    if auction["item"]["id"] == item_id:
-                        price = auction.get("unit_price") or auction.get("buyout")
-                        if price:
-                            prices.append(price)
-
+        for i, item in enumerate(display_variants):
+            prices = item.get("prices", [])
             tier = item.get("tier")
             
-            # Label logic
-            if len(variants_sorted) == 1:
+            if len(display_variants) == 1:
                 field_name = "Current Price"
             else:
-                # If tier is missing but we have multiples, infer Q1/Q2/Q3 from order
                 if tier:
                     field_name = TIER_LABELS.get(tier, f"Quality {tier}")
                 else:
@@ -422,12 +388,11 @@ class WoW(commands.Cog):
                     inline=True
                 )
                 any_found = True
-            elif len(variants_sorted) > 1:
-                # For multi-variant items, show 'No listings' to keep the grid consistent
+            elif len(display_variants) > 1:
                 embed.add_field(name=field_name, value="No listings found", inline=True)
 
         if not any_found:
-            msg = f"❌ No auctions found for **{variants_sorted[0]['name']}**."
+            msg = f"❌ No auctions found for **{name}**."
             if isinstance(context, discord.Interaction):
                 return await context.response.edit_message(content=msg, embed=None, view=None)
             return await context.send(msg)
@@ -590,19 +555,14 @@ class WoW(commands.Cog):
         all_members = await self.get_guild_roster(session, self.guild_realm, self.guild_name)
         if not all_members: return "⚠️ Error fetching guild roster."
 
-        # Filter for max level characters only (assuming level 80 for TWW)
-        # This significantly reduces API calls for large guilds with lots of alts/inactive low-levels
         guild = [m for m in all_members if m.get("level", 0) >= 80]
-        
-        # If no level 80s found, fallback to all members (might be a different expansion or level cap)
         if not guild:
-            guild = all_members[:100] # Cap at 100 to prevent 5-minute waits
+            guild = all_members[:100]
 
-        semaphore = asyncio.Semaphore(5) # Higher concurrency for roster fetching
+        semaphore = asyncio.Semaphore(5)
         async def sem_fetch(char):
             async with semaphore:
                 result = await self.fetch_char_stats(session, char)
-                # Reduced sleep to speed up the process while staying safe
                 await asyncio.sleep(0.05)
                 return result
 
@@ -708,7 +668,7 @@ class WoW(commands.Cog):
     async def lookup(self, ctx, *, query: str):
         """Lookup a WoW character: name-realm or name."""
         async with ctx.typing():
-            name, realm = query, "frostmourne"
+            name, realm = query, self.guild_realm
             if "-" in query:
                 parts = query.rsplit("-", 1)
                 name, realm = parts[0].strip(), parts[1].strip().lower().replace(" ", "").replace("'", "")
