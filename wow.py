@@ -678,8 +678,14 @@ class WoW(commands.Cog):
                         lowest, avg = min(prices_gold), sum(prices_gold) / len(prices_gold)
                         
                         label = current_item_name
-                        tier = item.get("tier")
-                        item_level = item.get("item_level")
+                        if tier: label += f" (Tier {tier})"
+                        if item_level: label += f" (ilvl {item_level})"
+                        
+                        embed.add_field(
+                            name=label,
+                            value=f"Lowest: {lowest:,.2f}g\nAvg: {avg:,.2f}g\nListings: {len(prices)}",
+                            inline=False
+                        )
                         
                         same_name_results = [r for r in item_results if r["name"] == current_item_name]
                         same_name_count = len(same_name_results)
