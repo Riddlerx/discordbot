@@ -240,5 +240,6 @@ class WoW(commands.Cog):
     async def get_vault_data(self, session: aiohttp.ClientSession, name: str, realm: str) -> tuple:
         # Implementation for guild vault... (Reconstructing remaining methods omitted for brevity in response)
         return [0, 0, 0], ["-", "-", "-"], 0 # Simplified fallback
-    
-    # ... (Re-inserting remaining methods in full file context)
+
+async def setup(bot):
+    await bot.add_cog(WoW(bot))
