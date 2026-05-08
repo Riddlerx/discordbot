@@ -251,10 +251,14 @@ class WoW(commands.Cog):
         if not best_matches:
             best_matches = sorted(all_matches.values(), key=match_score, reverse=True)[:10]
 
+        # ENRICHMENT: The search API often omits the tier. We need to fetch details 
+        # for these specific candidates to know if they are tiered before deduplicating.
+        enriched_matches = await self.enrich_item_results(session, best_matches)
+
         # DEDUPLICATION: If multiple IDs have the same name and NO TIER, keep only one.
-        # This prevents "Meaty Haunch" from showing multiple variants.
+        # This prevents "Meaty Haunch" from showing multiple variants while keeping Flask tiers.
         unique_results = {}
-        for item in best_matches:
+        for item in enriched_matches:
             name_lower = item["name"].lower()
             tier = item.get("tier")
             # If it has a tier, it's a distinct quality variant
@@ -263,13 +267,13 @@ class WoW(commands.Cog):
             else:
                 key = (name_lower, "no-tier")
             
-            # Prefer newer IDs (higher number) if duplicates exist
+            # Prefer newer IDs if duplicates exist for the same name+tier combo
             if key not in unique_results or item["id"] > unique_results[key]["id"]:
                 unique_results[key] = item
 
         candidates = list(unique_results.values())
-        candidates.sort(key=lambda x: len(x["name"]))
-        return candidates[:5]
+        candidates.sort(key=lambda x: (len(x["name"]), x.get("tier") or 0))
+        return candidates[:15] # Return more so the command logic can group them
 
     @commands.command()
     async def price(self, ctx, *, search: str):
