@@ -204,6 +204,21 @@ class WoW(commands.Cog):
                     return await ctx.send(embed=embed, view=ItemSelectionView(item_results, show_item_price))
                 await self.display_item_price(ctx, item_results[0], realm, session)
 
+    async def get_commodities_cached(self, session: aiohttp.ClientSession) -> Dict:
+        now = time.time()
+        if self.commodities_cache and now - self.commodities_cache_time < CACHE_DURATION:
+            return self.commodities_cache
+        token = await self.get_access_token(session)
+        if not token:
+            return {}
+        url = "https://us.api.blizzard.com/data/wow/auctions/commodities"
+        headers = {"Authorization": f"Bearer {token}"}
+        data = await self.safe_get(session, url, headers=headers, params={"namespace": "dynamic-us", "locale": "en_US"})
+        if data:
+            self.commodities_cache = data
+            self.commodities_cache_time = now
+        return self.commodities_cache or {}
+
     async def display_item_price(self, context, item, realm, session):
         commodities = await self.get_commodities_cached(session)
         realm_data = None
