@@ -677,6 +677,9 @@ class WoW(commands.Cog):
                         prices_gold = [p / 10000 for p in prices]
                         lowest, avg = min(prices_gold), sum(prices_gold) / len(prices_gold)
                         
+                        tier = item.get("tier")
+                        item_level = item.get("item_level")
+                        
                         label = current_item_name
                         if tier: label += f" (Tier {tier})"
                         if item_level: label += f" (ilvl {item_level})"
