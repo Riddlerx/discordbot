@@ -373,48 +373,48 @@ class WoW(commands.Cog):
         if not token: return []
         url = "https://us.api.blizzard.com/data/wow/search/item"
         headers = {"Authorization": f"Bearer {token}"}
-        clean_name = item_name.strip().rstrip(".,")
-        variations = [clean_name]
-        if "-" in clean_name:
-            variations.extend([clean_name.replace("-", " "), clean_name.replace("-", "")])
 
+        # Prepare variations to be more forgiving
+        clean_name = item_name.strip().rstrip(".,").lower()
+        variations = {clean_name}
+
+        # Add variation without "the " prefix
+        if clean_name.startswith("the "):
+            variations.add(clean_name[4:])
+        # Add variation with "the " prefix
+        variations.add(f"the {clean_name}")
+
+        # Add variations handling hyphens
+        for v in list(variations):
+            if "-" in v:
+                variations.add(v.replace("-", " "))
+                variations.add(v.replace("-", ""))
+
+        all_matches = []
         for name_variant in variations:
-            search_strategies = [
-                ({"name.en_US": name_variant}, {}),
-                ({"name.en_US": f"*{name_variant}*"}, {"orderby": "id:desc"}),
-            ]
-            for q_params, extra_params in search_strategies:
-                params = {"namespace": "static-us", "locale": "en_US", **q_params, **extra_params}
-                data = await self.safe_get(session, url, headers=headers, params=params)
-                if data and data.get("results"):
-                    results = data.get("results")
-                    exact_matches = []
-                    for r in results:
-                        item_data = r["data"]
-                        name = item_data.get("name", {}).get("en_US", "")
-                        if name.lower() == name_variant.lower() or name.lower() == clean_name.lower():
-                            tier = item_data.get("quality", {}).get("tier")
-                            exact_matches.append({"id": item_data["id"], "name": name, "tier": tier})
-                    if exact_matches:
-                        return sorted(exact_matches, key=lambda x: (x.get("tier") or 0, x["id"]))
-                    
-                    starts_with = []
-                    for r in results:
-                        item_data = r["data"]
-                        name = item_data.get("name", {}).get("en_US", "")
-                        if name.lower().startswith(name_variant.lower()) or name.lower().startswith(clean_name.lower()):
-                            tier = item_data.get("quality", {}).get("tier")
-                            starts_with.append({"id": item_data["id"], "name": name, "tier": tier})
-                    if starts_with:
-                        unique_names, final_results = [], []
-                        for m in sorted(starts_with, key=lambda x: (x.get("tier") or 0, x["id"])):
-                            if m["name"] not in unique_names:
-                                if len(unique_names) >= 5: continue
-                                unique_names.append(m["name"])
-                            final_results.append(m)
-                        return final_results
-        return []
+            # We use fuzzy search directly now to be more forgiving
+            params = {
+                "namespace": "static-us", 
+                "locale": "en_US", 
+                "name.en_US": f"*{name_variant}*",
+                "orderby": "id:desc"
+            }
+            data = await self.safe_get(session, url, headers=headers, params=params)
 
+            if data and data.get("results"):
+                for r in data.get("results"):
+                    item_data = r["data"]
+                    name = item_data.get("name", {}).get("en_US", "")
+                    # Calculate a simple similarity score or just collect matches
+                    if name.lower() not in [m["name"].lower() for m in all_matches]:
+                        tier = item_data.get("quality", {}).get("tier")
+                        all_matches.append({"id": item_data["id"], "name": name, "tier": tier})
+
+        # Return top 5 matches, sorted by name length (closest to input) then quality
+        if all_matches:
+            all_matches.sort(key=lambda x: (abs(len(x["name"]) - len(item_name)), x.get("tier") or 0))
+            return all_matches[:5]
+        return []
     def get_class_emoji(self, class_id: int) -> str:
         """Try to find a custom emoji in the bot's cache (wowwarrior, wowpaladin, etc.)."""
         classes = {
