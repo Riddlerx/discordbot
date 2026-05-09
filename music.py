@@ -138,11 +138,11 @@ YDL_OPTIONS_FAST = {
     'writeautomaticsub': False,
     'getcomments': False,
     'cachedir': os.path.join(tempfile.gettempdir(), 'yt_dlp_cache'),
-    'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'),
-    'cookiefile': os.getenv("YTDLP_COOKIES") or os.getenv("YOUTUBE_COOKIES_PATH") or 'cookies.txt',
+    'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'),
+    'cookiefile': '/home/ubuntu/discordbot/cookies.txt',
     'proxy': os.getenv("YTDLP_PROXY"),
-    # extractor_args will be dynamically set by _build_ydl_options
-    'extractor_args': {"youtube": {"player_client": ["ios", "android", "mweb"]}}, 
+    # Use a more effective player client configuration
+    'extractor_args': {"youtube": {"player_client": "web"}}, 
     'lazy_playlist': True,
     'playlist_items': '1',
     'noplaylist': True,
@@ -163,14 +163,11 @@ def _get_yt_dlp_auth_config() -> dict:
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
     auth_options: dict = {}
 
-    if cookies_path:
-        if not os.path.exists(cookies_path):
-            logger.warning("yt-dlp cookie file not found: %s", cookies_path)
-        else:
-            auth_options["cookiefile"] = cookies_path
-
     if cookies_from_browser:
         auth_options["cookiesfrombrowser"] = (cookies_from_browser,)
+    elif cookies_path:
+        if os.path.exists(cookies_path):
+            auth_options["cookiefile"] = cookies_path
 
     return auth_options
 
@@ -1148,49 +1145,47 @@ class Music(commands.Cog):
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
         searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
-        async with ctx.typing():
-            try:
-                s_start = time.perf_counter()
-                voice_ok = await self._ensure_voice(ctx)
-                logger.info("Voice prepare guild=%s took %.2fs", ctx.guild.id, time.perf_counter() - s_start)
+        try:
+            s_start = time.perf_counter()
+            voice_ok = await self._ensure_voice(ctx)
+            logger.info("Voice prepare guild=%s took %.2fs", ctx.guild.id, time.perf_counter() - s_start)
 
-                # Check if it's a Spotify playlist/album for lazy loading
-                playlist_tracks = None
-                if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
-                    playlist_tracks = await _extract_spotify_metadata(query)
-                
-                if isinstance(playlist_tracks, list) and playlist_tracks:
-                    logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
-                    # Resolve first track immediately
-                    info, audio_path = await search_and_download(playlist_tracks[0], download=True)
-                    info['original_url'] = playlist_tracks[0]
-                    info['_audio_path'] = audio_path
-                    
-                    # Add remaining tracks as placeholders (will be resolved when played)
-                    for track_query in playlist_tracks[1:50]:
-                        st.queue.append({
-                            'title': track_query,
-                            'original_url': track_query,
-                        })
-                    
-                    added_msg = f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify."
-                else:
-                    # Single track or normal search
-                    s_dl = time.perf_counter()
-                    info, audio_path = await search_and_download(query, download=True)
-                    elapsed = time.perf_counter() - s_dl
-                    logger.info("Search+download guild=%s took %.2fs", ctx.guild.id, elapsed)
-                    
-                    info['original_url'] = query
-                    info['_audio_path'] = audio_path
-                    added_msg = f"\U0001f4cb Added to queue: **{info.get('title')}**"
+            # Check if it's a Spotify playlist/album for lazy loading
+            playlist_tracks = None
+            if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
+                playlist_tracks = await _extract_spotify_metadata(query)
 
-            except Exception as e:
-                if 'searching_msg' in locals():
-                    await searching_msg.delete()
-                logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
-                return await ctx.send(f"\u274c Could not load track: {e}")
+            if isinstance(playlist_tracks, list) and playlist_tracks:
+                logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
+                # Resolve first track immediately
+                info, audio_path = await search_and_download(playlist_tracks[0], download=True)
+                info['original_url'] = playlist_tracks[0]
+                info['_audio_path'] = audio_path
 
+                # Add remaining tracks as placeholders (will be resolved when played)
+                for track_query in playlist_tracks[1:50]:
+                    st.queue.append({
+                        'title': track_query,
+                        'original_url': track_query,
+                    })
+
+                added_msg = f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify."
+            else:
+                # Single track or normal search
+                s_dl = time.perf_counter()
+                info, audio_path = await search_and_download(query, download=True)
+                elapsed = time.perf_counter() - s_dl
+                logger.info("Search+download guild=%s took %.2fs", ctx.guild.id, elapsed)
+
+                info['original_url'] = query
+                info['_audio_path'] = audio_path
+                added_msg = f"\U0001f4cb Added to queue: **{info.get('title')}**"
+
+        except Exception as e:
+            if 'searching_msg' in locals():
+                await searching_msg.delete()
+            logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
+            return await ctx.send(f"\u274c Could not load track: {e}")
         if 'searching_msg' in locals():
             await searching_msg.delete()
             
