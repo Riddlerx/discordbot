@@ -636,10 +636,46 @@ class WoW(commands.Cog):
             try:
                 async with aiohttp.ClientSession() as session:
                     content = await self.build_guild_vault_text(session)
-                    message = await ctx.send(content)
-                    self.guild_vault_message_id = message.id
-                    self.last_content = content
-                    self.save_state()
+                    
+                    # If it fits in one message, just send it
+                    if len(content) <= 2000:
+                        message = await ctx.send(content)
+                        self.guild_vault_message_id = message.id
+                        self.last_content = content
+                        self.save_state()
+                        return
+
+                    # Otherwise, paginate
+                    lines = content.split('\n')
+                    
+                    # Extract the footer (assume lines starting with 💰 or Last Updated:)
+                    footer_lines = [line for line in lines if line.startswith("💰") or line.startswith("Last Updated:")]
+                    body_lines = [line for line in lines if not (line.startswith("💰") or line.startswith("Last Updated:"))]
+                    footer = "\n".join(footer_lines)
+                    
+                    parts = []
+                    current_part = ""
+                    for line in body_lines:
+                        if len(current_part) + len(line) + 1 > 1900:
+                            parts.append(current_part)
+                            current_part = line
+                        else:
+                            current_part += ("\n" if current_part else "") + line
+                    
+                    # Add remaining body and footer
+                    if current_part:
+                        parts.append(current_part)
+                    
+                    # Append footer to the last part
+                    if footer:
+                        if parts:
+                            parts[-1] += "\n\n" + footer
+                        else:
+                            parts.append(footer)
+                            
+                    for part in parts:
+                        await ctx.send(part)
+                        
             except Exception as e:
                 logger.error(f"Error in guildvault command: {e}")
                 await ctx.send(f"⚠️ An error occurred: {e}")
