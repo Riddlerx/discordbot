@@ -571,36 +571,58 @@ class WoW(commands.Cog):
         rows = [r for r in results if r is not None]
         rows.sort(key=lambda x: (sum(x[1]), x[3]), reverse=True)
 
-        max_name_len = max((len(name) for name, _, _, _, _ in rows[:25]), default=10)
+        # Show at most 25, but we will truncate later if it exceeds 2000 chars
+        display_rows = rows[:25]
+        
+        max_name_len = max((len(name) for name, _, _, _, _ in display_rows), default=10)
         max_name_len = min(max_name_len, 20)
 
-        lines = ["🔥 **WEEKLY VAULT LEADERBOARD** 🔥"]
-        header = f"| {'Name':<{max_name_len + 3}} | Key Vault | Raid Vault | Score |"
-        lines.append(f"👤 `{header}`")
-        separator = f"|{'-'*(max_name_len+5)}+-----------+-----------+--------|"
-        lines.append(f"⠀ `{separator}`")
+        def generate_content(limit_rows):
+            lines = ["🔥 **WEEKLY VAULT LEADERBOARD** 🔥"]
+            header = f"| {'Name':<{max_name_len + 3}} | Key Vault | Raid Vault | Score |"
+            lines.append(f"👤 `{header}`")
+            separator = f"|{'-'*(max_name_len+5)}+-----------+-----------+--------|"
+            lines.append(f"⠀ `{separator}`")
 
-        for i, (name, keys, raid, score, class_id) in enumerate(rows[:25], start=1):
-            emoji = self.get_class_emoji(class_id)
-            key_str = f"{keys[0]}/{keys[1]}/{keys[2]}"
-            raid_str = "/".join(raid)
-            row = f"| #{i:<2} {name:<{max_name_len}} | {key_str:^9} | {raid_str:^9} | {score:>5} |"
-            lines.append(f"{emoji} `{row}`")
+            for i, (name, keys, raid, score, class_id) in enumerate(limit_rows, start=1):
+                emoji = self.get_class_emoji(class_id)
+                key_str = f"{keys[0]}/{keys[1]}/{keys[2]}"
+                raid_str = "/".join(raid)
+                row = f"| #{i:<2} {name:<{max_name_len}} | {key_str:^9} | {raid_str:^9} | {score:>5} |"
+                lines.append(f"{emoji} `{row}`")
 
-        lines.append(f"⠀ `{separator}`")
+            lines.append(f"⠀ `{separator}`")
+            
+            return lines
+
+        lines = generate_content(display_rows)
         
-        token_price = await self.get_wow_token_price(session)
+        # Add footer
+        token_price = 0
+        try:
+            token_price = await self.get_wow_token_price(session)
+        except Exception as e:
+            logger.warning("Error fetching token price: %s", e)
+
+        footer_lines = []
         if token_price > 0:
-            lines.append(f"💰 **WoW Token Price:** {token_price:,.0f}g")
+            footer_lines.append(f"💰 **WoW Token Price:** {token_price:,.0f}g")
         
         unix_now = int(time.time())
-        lines.append(f"Last Updated: <t:{unix_now}:R>")
-        return "\n".join(lines)
+        footer_lines.append(f"Last Updated: <t:{unix_now}:R>")
+        
+        # Check total length and truncate rows if necessary
+        while len("\n".join(lines + footer_lines)) > 1950 and len(display_rows) > 5:
+            display_rows.pop()
+            lines = generate_content(display_rows)
+
+        return "\n".join(lines + footer_lines)
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self.auto_update_task is None or self.auto_update_task.done():
             self.auto_update_task = self.bot.loop.create_task(self.auto_update())
+            logger.info("Started WoW leaderboard auto-update task.")
 
     async def auto_update(self):
         await self.bot.wait_until_ready()
@@ -609,25 +631,43 @@ class WoW(commands.Cog):
                 if self.guild_vault_message_id is None:
                     await asyncio.sleep(60)
                     continue
+
                 channel = self.bot.get_channel(self.guild_channel_id)
                 if not channel:
-                    await asyncio.sleep(60)
-                    continue
+                    try:
+                        channel = await self.bot.fetch_channel(self.guild_channel_id)
+                    except Exception as e:
+                        logger.warning(f"Could not find channel {self.guild_channel_id}: {e}")
+                        await asyncio.sleep(60)
+                        continue
+
                 try:
                     try:
                         message = await channel.fetch_message(self.guild_vault_message_id)
                     except discord.NotFound:
+                        logger.warning(f"Leaderboard message {self.guild_vault_message_id} not found. Stopping auto-update until manual reset.")
                         self.guild_vault_message_id = None
+                        self.save_state()
+                        continue
+                    except discord.Forbidden:
+                        logger.error(f"Missing permissions to fetch leaderboard message in {channel.name}")
+                        await asyncio.sleep(300)
                         continue
                     
                     new_content = await self.build_guild_vault_text(session)
                     if new_content != self.last_content:
-                        await message.edit(content=new_content, embed=None)
-                        self.last_content = new_content
-                        self.save_state()
-                        logger.info("Updated leaderboard text message_id=%s", self.guild_vault_message_id)
+                        try:
+                            await message.edit(content=new_content, embed=None)
+                            self.last_content = new_content
+                            self.save_state()
+                            logger.info("Updated leaderboard text message_id=%s", self.guild_vault_message_id)
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to edit leaderboard message: {e}")
+                            if e.code == 50035: # Invalid Form Body (e.g. too long)
+                                logger.error("Content might be too long even after truncation.")
                 except Exception as e:
-                    logger.exception("Leaderboard update error: %s", e)
+                    logger.exception("Leaderboard update loop error: %s", e)
+                
                 await asyncio.sleep(1800)
 
     @commands.command()
@@ -645,7 +685,7 @@ class WoW(commands.Cog):
                         self.save_state()
                         return
 
-                    # Otherwise, paginate
+                    # Otherwise, paginate (though build_guild_vault_text now truncates to fit)
                     lines = content.split('\n')
                     
                     # Extract the footer (assume lines starting with 💰 or Last Updated:)
