@@ -138,7 +138,7 @@ YDL_OPTIONS_FAST = {
     'getcomments': False,
     'cachedir': os.path.join(tempfile.gettempdir(), 'yt_dlp_cache'),
     'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'),
-    'cookiefile': '/home/ubuntu/discordbot/cookies.txt',
+    'cookiefile': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt'),
     'proxy': None,
     # Simplified format selection to avoid bot detection triggers
     'extractor_args': {},

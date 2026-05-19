@@ -2,7 +2,7 @@ import sqlite3
 import os
 
 DB_PATH = "/home/ubuntu/.youtube-profile/Default/Cookies"
-COOKIES_PATH = "/home/ubuntu/discordbot/cookies.txt"
+COOKIES_PATH = "cookies.txt"
 
 def refresh_cookies():
     try:
