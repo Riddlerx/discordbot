@@ -128,8 +128,6 @@ YDL_OPTIONS_FAST = {
     'concurrent_fragment_downloads': 5,
     # GCP Speed Optimizations
     'nocheckcertificate': True,
-    'youtube_include_dash_manifest': False,
-    'youtube_include_hls_manifest': False,
     'check_formats': 'cached',
     # Minimal extraction for speed
     'skip_download': False,
@@ -137,12 +135,11 @@ YDL_OPTIONS_FAST = {
     'writesubtitles': False,
     'writeautomaticsub': False,
     'getcomments': False,
-    'cachedir': os.path.join(tempfile.gettempdir(), 'yt_dlp_cache'),
     'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'),
     'cookiefile': '/home/ubuntu/discordbot/cookies.txt',
     'proxy': os.getenv("YTDLP_PROXY"),
     # Use a more effective player client configuration
-    'extractor_args': {"youtube": {"player_client": "web"}}, 
+    'extractor_args': {"youtube": {"player_client": "ios,web"}}, 
     'lazy_playlist': True,
     'playlist_items': '1',
     'noplaylist': True,
