@@ -183,12 +183,10 @@ def _build_ydl_options(base_options: dict) -> dict:
 
     js_runtime = os.getenv("YTDLP_JS_RUNTIME")
     if js_runtime:
-        logger.info("Detected YTDLP_JS_RUNTIME: %s", js_runtime)
         options["js_runtimes"] = {js_runtime: {}}
 
     remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
     if remote_components:
-        logger.info("Detected YTDLP_REMOTE_COMPONENTS: %s", remote_components)
         options["remote_components"] = remote_components
 
     if auth_cfg.get("cookiefile"):
