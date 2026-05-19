@@ -139,7 +139,7 @@ YDL_OPTIONS_FAST = {
     'cachedir': os.path.join(tempfile.gettempdir(), 'yt_dlp_cache'),
     'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'),
     'cookiefile': '/home/ubuntu/discordbot/cookies.txt',
-    'proxy': 'socks5://127.0.0.1:9050',
+    'proxy': None,
     # Simplified format selection to avoid bot detection triggers
     'extractor_args': {},
     'lazy_playlist': True,
