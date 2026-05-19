@@ -115,7 +115,7 @@ async def _extract_spotify_metadata(url: str) -> list[str] | str | None:
 # ── yt-dlp options ─────────────────────────────────────────────────────────────
 
 YDL_OPTIONS_FAST = {
-    'format': 'bestaudio[ext=webm][vcodec=none]/bestaudio/best',
+    'format': 'bestaudio/best',
     'noplaylist': True,
     'default_search': 'ytsearch1',
     'quiet': True,
