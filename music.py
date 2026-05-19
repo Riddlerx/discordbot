@@ -122,6 +122,7 @@ YDL_OPTIONS_FAST = {
     'no_warnings': True,
     'no_color': True,
     'js_runtimes': {'node': {'path': 'node'}},
+    'remote_components': 'ejs:github',
     'force_ipv4': True,
     'retries': 5,
     'fragment_retries': 5,
