@@ -186,7 +186,7 @@ def _build_ydl_options(base_options: dict) -> dict:
 
     js_runtime = os.getenv("YTDLP_JS_RUNTIME")
     if js_runtime:
-        options["js_runtimes"] = [js_runtime]
+        options["js_runtimes"] = {js_runtime: {}}
 
     remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
     if remote_components:
