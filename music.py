@@ -115,7 +115,7 @@ async def _extract_spotify_metadata(url: str) -> list[str] | str | None:
 # ── yt-dlp options ─────────────────────────────────────────────────────────────
 
 YDL_OPTIONS_FAST = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio',
     'noplaylist': True,
     'default_search': 'ytsearch1',
     'quiet': True,
@@ -153,7 +153,7 @@ YDL_OPTIONS_FAST = {
 
 YDL_OPTIONS_FALLBACK = {
     **YDL_OPTIONS_FAST,
-    'format': 'bestaudio/best',
+    'format': 'bestaudio',
 }
 
 def _get_yt_dlp_auth_config() -> dict:
