@@ -500,6 +500,7 @@ class GuildState:
         self.playback_started_at: float | None = None
         self.expected_disconnect_until: float = 0.0
         self.recovery_lock = asyncio.Lock()
+        self.connection_lock = asyncio.Lock()
         self.empty_disconnect_task: asyncio.Task | None = None
 
 
@@ -612,11 +613,14 @@ class Music(commands.Cog):
         st.empty_disconnect_task = self.bot.loop.create_task(self._empty_disconnect_watch(guild.id))
 
     async def _connect_to_voice_channel(self, guild: discord.Guild, voice_channel: discord.VoiceChannel) -> bool:
-        vc = guild.voice_client
-        try:
-            if vc:
-                if vc.is_connected():
-                    if vc.channel != voice_channel:
+        st = self.state(guild.id)
+        async with st.connection_lock:
+            vc = guild.voice_client
+            try:
+                if vc:
+                    if vc.is_connected():
+                        if vc.channel == voice_channel:
+                            return True
                         logger.info(
                             "Moving voice client guild=%s from=%s to=%s",
                             guild.id,
@@ -624,19 +628,29 @@ class Music(commands.Cog):
                             voice_channel,
                         )
                         await vc.move_to(voice_channel)
-                    return True
+                        return True
 
-                logger.warning("Found ghost voice client in guild=%s; disconnecting it", guild.id)
-                self._mark_expected_disconnect(self.state(guild.id))
-                await vc.disconnect(force=True)
+                    logger.warning("Found ghost or reconnecting voice client in guild=%s; cleaning it up", guild.id)
+                    self._mark_expected_disconnect(st)
+                    await vc.disconnect(force=True)
+                    
+                    # Wait for cleanup to reflect in guild.voice_client
+                    for _ in range(20):
+                        if guild.voice_client is None:
+                            break
+                        await asyncio.sleep(0.1)
+                    
+                    # Small extra buffer for gateway state to settle and avoid race with new CONNECT
+                    await asyncio.sleep(0.5)
 
-            logger.info("Connecting voice client guild=%s channel=%s", guild.id, voice_channel)
-            await voice_channel.connect(timeout=60.0, reconnect=True)
-            self.state(guild.id).last_voice_channel_id = voice_channel.id
-            return True
-        except Exception as exc:
-            logger.exception("Voice connection failed guild=%s channel=%s: %s", guild.id, voice_channel, exc)
-            return False
+                logger.info("Connecting voice client guild=%s channel=%s", guild.id, voice_channel)
+                # Setting reconnect=True is fine if we ensured a clean slate
+                await voice_channel.connect(timeout=60.0, reconnect=True)
+                st.last_voice_channel_id = voice_channel.id
+                return True
+            except Exception as exc:
+                logger.exception("Voice connection failed guild=%s channel=%s: %s", guild.id, voice_channel, exc)
+                return False
 
     def _create_audio_source(self, guild_id: int, audio_path: str, volume: float, *, seek_seconds: int = 0):
         # Optimized for local files and streaming (more stable on AWS)
@@ -826,7 +840,7 @@ class Music(commands.Cog):
     async def _voice_watchdog(self):
         try:
             while True:
-                await asyncio.sleep(15)
+                await asyncio.sleep(30)
                 for guild_id, st in list(self._states.items()):
                     if time.monotonic() < st.expected_disconnect_until:
                         continue
