@@ -121,7 +121,7 @@ YDL_OPTIONS_FAST = {
     'quiet': True,
     'no_warnings': True,
     'no_color': True,
-    'js_runtimes': {'node': {}},
+    'js_runtimes': {'node': {'path': 'node'}},
     'force_ipv4': True,
     'retries': 5,
     'fragment_retries': 5,
