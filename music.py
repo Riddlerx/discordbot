@@ -1016,11 +1016,7 @@ class Music(commands.Cog):
                 query = info.get('original_url') or info.get('webpage_url') or info.get('title')
                 # Try download first for reliability
                 try:
-                    # SoundCloud tracks stream better than downloading
-                    if 'soundcloud' in query:
-                        info, audio_path = await search_and_download(query, download=False)
-                    else:
-                        info, audio_path = await search_and_download(query, download=True)
+                    info, audio_path = await search_and_download(query, download=True)
                 except Exception as e:
                     logger.warning("Download failed for track, falling back to stream: %s", e)
                     # Fallback to streaming if download fails
