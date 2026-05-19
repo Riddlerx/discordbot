@@ -117,7 +117,7 @@ async def _extract_spotify_metadata(url: str) -> list[str] | str | None:
 YDL_OPTIONS_FAST = {
     'format': 'bestaudio/best',
     'noplaylist': True,
-    'default_search': 'scsearch1',
+    'default_search': 'ytsearch1',
     'quiet': True,
     'no_warnings': True,
     'no_color': True,
