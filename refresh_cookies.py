@@ -1,11 +1,14 @@
 import sqlite3
 import os
 
-DB_PATH = "/home/ubuntu/.youtube-profile/Default/Cookies"
-COOKIES_PATH = "cookies.txt"
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.getenv("YOUTUBE_COOKIES_DB_PATH", "")
+COOKIES_PATH = os.getenv("YOUTUBE_COOKIES_OUTPUT", os.path.join(REPO_DIR, "cookies.txt"))
 
 def refresh_cookies():
     try:
+        if not DB_PATH:
+            raise ValueError("Set YOUTUBE_COOKIES_DB_PATH to your browser cookies SQLite database path.")
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT host_key, path, is_secure, expires_utc, name, value FROM cookies WHERE host_key LIKE "%youtube.com%"')

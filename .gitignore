@@ -5,3 +5,5 @@ bot_state.json
 node_modules/
 potoken.json
 cookies.txt
+
+deno/

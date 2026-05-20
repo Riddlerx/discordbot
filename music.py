@@ -1,433 +1,34 @@
-import discord
-from discord.ext import commands
-import yt_dlp
 import asyncio
-import os
-import shlex
-import random
-import tempfile
-import glob
-import time
 import gc
 import logging
-import re
-import aiohttp
-import html as html_lib
-from concurrent.futures import ThreadPoolExecutor
+import os
+import random
+import shlex
+import time
 from collections import deque
 
-TEMP_DIR = os.path.join(tempfile.gettempdir(), 'discord_music')
-os.makedirs(TEMP_DIR, exist_ok=True)
+import discord
+from discord.ext import commands
+
+from music_backend import (
+    DEFAULT_USER_AGENT,
+    cleanup_all,
+    cleanup_stale_audio_files,
+    clone_info,
+    extract_spotify_metadata,
+    get_yt_dlp_auth_config,
+    parse_cookies_for_ffmpeg,
+    search_and_download,
+    track_label,
+    warmup_extractors,
+)
+
 logger = logging.getLogger("discordbot.music")
 AUTO_DISCONNECT_WHEN_EMPTY = os.getenv("AUTO_DISCONNECT_WHEN_EMPTY", "true").strip().lower() in ("1", "true", "yes", "on")
 AUTO_DISCONNECT_EMPTY_DELAY = int(os.getenv("AUTO_DISCONNECT_EMPTY_DELAY", "60"))
-
-# ── Spotify Metadata Extraction ──────────────────────────────────────────────
-
-async def _extract_spotify_metadata(url: str) -> list[str] | str | None:
-    """Extract song title and artist from a Spotify URL using simple HTML scraping.
-    Returns a list of queries if it's a playlist/album, or a single query string for a track.
-    """
-    try:
-        # Handle spotify.link (mobile redirects)
-        if "spotify.link" in url:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, allow_redirects=True, timeout=10) as resp:
-                    url = str(resp.url)
-                    logger.info("Redirected spotify.link to: %s", url)
-
-        # Convert to embed URL for better scraping
-        embed_url = url
-        if "/embed/" not in url:
-            embed_url = url.replace("open.spotify.com/track/", "open.spotify.com/embed/track/")
-            embed_url = embed_url.replace("open.spotify.com/playlist/", "open.spotify.com/embed/playlist/")
-            embed_url = embed_url.replace("open.spotify.com/album/", "open.spotify.com/embed/album/")
-        
-        # Remove query params for a cleaner URL
-        if "?" in embed_url:
-            embed_url = embed_url.split("?")[0]
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(embed_url, timeout=10) as response:
-                if response.status != 200:
-                    logger.warning("Spotify metadata request failed with status %d for %s", response.status, embed_url)
-                    return None
-                html = await response.text()
-                
-                is_collection = "/playlist/" in embed_url or "/album/" in embed_url
-                tracks = []
-                
-                # Pattern 1: JSON-LD like structure (Most reliable)
-                # "title":"Track Name","artists":[{"name":"Artist Name"}]
-                # We use a permissive regex to handle whitespace/formatting variations
-                t_matches = re.findall(r'\"title\":\"([^\"]+)\".*?\"artists\":\[\{.*?\"name\":\"([^\"]+)\"', html)
-                for t_name, a_name in t_matches:
-                    t, a = html_lib.unescape(t_name).strip(), html_lib.unescape(a_name).strip()
-                    if t.lower() not in ("spotify", "playlist", "album"):
-                        tracks.append(f"{t} {a}")
-
-                # Pattern 2: title/subtitle (Common in playlists)
-                if not tracks:
-                    ts_matches = re.findall(r'\"title\":\"([^\"]+)\",\"subtitle\":\"([^\"]+)\"', html)
-                    for t_name, s_name in ts_matches:
-                        t, s = html_lib.unescape(t_name).strip(), html_lib.unescape(s_name).strip()
-                        if t.lower() not in ("spotify", "playlist", "album"):
-                            tracks.append(f"{t} {s}")
-
-                # Pattern 3: name/artists array (Backup)
-                if not tracks:
-                    na_matches = re.findall(r'\"name\":\"([^\"]+)\",\"artists\":\[\{.*?\"name\":\"([^\"]+)\"', html)
-                    for t_name, a_name in na_matches:
-                        t, a = html_lib.unescape(t_name).strip(), html_lib.unescape(a_name).strip()
-                        if t.lower() not in ("spotify", "playlist", "album"):
-                            tracks.append(f"{t} {a}")
-
-                if tracks:
-                    if is_collection:
-                        logger.info("Extracted %d tracks from Spotify collection: %s", len(tracks), url)
-                        return tracks
-                    return tracks[0]
-                
-                # Final Fallback: Open Graph Metadata
-                og_title = re.search(r'property="og:title"\s+content="([^"]+)"', html)
-                if og_title:
-                    title = html_lib.unescape(og_title.group(1).replace(" | Spotify", "").strip())
-                    if title.lower() not in ("spotify", "playlist", "album"):
-                        og_desc = re.search(r'property="og:description"\s+content="([^"]+)"', html)
-                        if og_desc:
-                            desc = html_lib.unescape(og_desc.group(1))
-                            artist = desc.split(" · ")[0] if " · " in desc else ""
-                            return f"{title} {artist}".strip()
-                        return title
-
-                # If all failed, log a snippet for debugging
-                snippet = html[:500].replace("\n", " ")
-                logger.warning("Spotify extraction failed for %s. Snippet: %s", embed_url, snippet)
-                return None
-    except Exception as e:
-        logger.warning("Failed to extract Spotify metadata from %s: %s", url, e)
-        return None
-
-# ── yt-dlp options ─────────────────────────────────────────────────────────────
-
-YDL_OPTIONS_FAST = {
-    'format': 'best/bestvideo+bestaudio',
-    'noplaylist': True,
-    'default_search': 'ytsearch1',
-    'quiet': True,
-    'no_warnings': True,
-    'no_color': True,
-    'js_runtimes': {'node': {'path': 'node'}},
-    'remote_components': 'ejs:github',
-    'force_ipv4': True,
-    'retries': 5,
-    'fragment_retries': 5,
-    'concurrent_fragment_downloads': 5,
-    # GCP Speed Optimizations
-    'nocheckcertificate': True,
-    'youtube_include_dash_manifest': False,
-    'youtube_include_hls_manifest': False,
-    # Minimal extraction for speed
-    'skip_download': False,
-    'writethumbnail': False,
-    'writesubtitles': False,
-    'writeautomaticsub': False,
-    'getcomments': False,
-    'cachedir': os.path.join(tempfile.gettempdir(), 'yt_dlp_cache'),
-    'user_agent': os.getenv("USER_AGENT", 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'),
-    'cookiefile': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt'),
-    'proxy': None,
-    # Simplified format selection to avoid bot detection triggers
-    'extractor_args': {},
-    'lazy_playlist': True,
-    'playlist_items': '1',
-    'noplaylist': True,
-    'noprogress': True,
-    'no_part': True,
-    'buffersize': 16384,
-    'outtmpl': os.path.join(TEMP_DIR, '%(id)s.%(ext)s'),
-}
-
-YDL_OPTIONS_FALLBACK = {
-    **YDL_OPTIONS_FAST,
-    'format': 'best/bestvideo+bestaudio',
-}
-
-def _get_yt_dlp_auth_config() -> dict:
-    """Return yt-dlp auth-related options from environment variables."""
-    cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("YOUTUBE_COOKIES_PATH")
-    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
-    auth_options: dict = {}
-
-    if cookies_from_browser:
-        auth_options["cookiesfrombrowser"] = (cookies_from_browser,)
-    elif cookies_path:
-        if os.path.exists(cookies_path):
-            auth_options["cookiefile"] = cookies_path
-
-    return auth_options
-
-
-def _build_ydl_options(base_options: dict) -> dict:
-    """Clone base yt-dlp options and apply auth and environment configuration."""
-    auth_cfg = _get_yt_dlp_auth_config()
-    options = {
-        **base_options,
-        **auth_cfg,
-    }
-
-    force_ipv4 = os.getenv("YTDLP_FORCE_IPV4")
-    if force_ipv4 is not None:
-        options["force_ipv4"] = force_ipv4.lower() in ("1", "true", "yes", "on")
-
-    js_runtime = os.getenv("YTDLP_JS_RUNTIME")
-    if js_runtime:
-        options["js_runtimes"] = {js_runtime: {}}
-
-    remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
-    if remote_components:
-        options["remote_components"] = remote_components
-
-    if auth_cfg.get("cookiefile"):
-        logger.info("Using yt-dlp cookies from %s", auth_cfg["cookiefile"])
-    elif base_options.get("cookiefile"):
-        logger.info("Using default yt-dlp cookies from %s", base_options["cookiefile"])
-    
-    return options
-
-
-_ydl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yt-dlp")
-_extract_semaphore = asyncio.Semaphore(1)
-_info_cache: dict[str, tuple[float, dict]] = {}
-_info_cache_lock = asyncio.Lock()
-_inflight_queries: dict[str, asyncio.Future] = {}
-_inflight_queries_lock = asyncio.Lock()
-_INFO_CACHE_TTL = 3600
-_STARTUP_WARMUP_DELAY = 5
 _STARTUP_WARMUP_YOUTUBE = os.getenv("MUSIC_WARMUP_YOUTUBE", "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _normalize_query(value: str | None) -> str | None:
-    if not value:
-        return None
-    return value.strip().lower()
-
-
-def _clone_info(info: dict) -> dict:
-    return dict(info)
-
-
-def _track_label(info: dict | None) -> str:
-    if not info:
-        return "unknown"
-    title = info.get("title") or "unknown"
-    video_id = info.get("id") or "unknown"
-    return f"{title} [{video_id}]"
-
-
-async def _read_cached_info(keys: list[str]) -> dict | None:
-    now = time.monotonic()
-    async with _info_cache_lock:
-        for key in keys:
-            cached = _info_cache.get(key)
-            if cached and now - cached[0] < _INFO_CACHE_TTL:
-                return _clone_info(cached[1])
-    return None
-
-
-async def _store_cached_info(info: dict, *keys: str | None):
-    now = time.monotonic()
-    cached_info = _clone_info(info)
-    cache_keys = {_normalize_query(key) for key in keys}
-    cache_keys.update(
-        {
-            _normalize_query(info.get("id")),
-            _normalize_query(info.get("webpage_url")),
-            _normalize_query(info.get("original_url")),
-            _normalize_query(info.get("title")),
-        }
-    )
-    async with _info_cache_lock:
-        expired = [key for key, (ts, _) in _info_cache.items() if now - ts >= _INFO_CACHE_TTL]
-        for key in expired:
-            _info_cache.pop(key, None)
-        for key in cache_keys:
-            if key:
-                _info_cache[key] = (now, cached_info)
-
-
-def get_audio_path(video_id: str) -> str | None:
-    """Find the downloaded audio file for a video ID."""
-    patterns = [
-        os.path.join(TEMP_DIR, f'{video_id}.opus'),
-        os.path.join(TEMP_DIR, f'{video_id}.m4a'),
-        os.path.join(TEMP_DIR, f'{video_id}.webm'),
-        os.path.join(TEMP_DIR, f'{video_id}.mp4'),
-        os.path.join(TEMP_DIR, f'{video_id}.*'),
-    ]
-    for pattern in patterns:
-        matches = glob.glob(pattern)
-        if matches:
-            return matches[0]
-    return None
-
-
-def cleanup_file(filepath: str):
-    """Remove a temp audio file."""
-    try:
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
-    except Exception:
-        pass
-
-
-def cleanup_all():
-    """Remove all temp audio files."""
-    for f in glob.glob(os.path.join(TEMP_DIR, '*')):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
-
-
-# ── Core: single-call search + download ───────────────────────────────────────
-
-async def search_and_download(query: str, *, refresh: bool = False, download: bool = True) -> tuple[dict, str]:
-    """Search YouTube, extract info, and optionally download audio.
-
-    Returns (info_dict, audio_path_or_url).
-    """
-    # 0. Handle Spotify URLs by converting them to YouTube search queries
-    # Note: Collections (playlists/albums) should be handled by the caller (e.g. play command)
-    # to avoid blocking on multiple downloads.
-    original_query = query
-    is_spotify = "open.spotify.com" in query
-    if is_spotify:
-        metadata = await _extract_spotify_metadata(query)
-        if isinstance(metadata, list):
-            # If a list is returned, just take the first one for this single-item call
-            query = metadata[0] if metadata else query
-        elif metadata:
-            query = metadata
-        else:
-            raise Exception("Could not extract song info from this Spotify link. Please try searching for the song name instead.")
-        
-        # Refinement: Append 'audio' to prioritize studio versions over music videos
-        if not query.lower().endswith("audio") and not query.lower().endswith("lyrics"):
-            query = f"{query} audio"
-
-    normalized = _normalize_query(query)
-
-    # 1. Check cache — if we already have info + file on disk, return immediately
-    if not refresh:
-        cache_lookup = [normalized] if normalized else []
-        if is_spotify:
-            cache_lookup.append(_normalize_query(original_query))
-        
-        cached = await _read_cached_info(cache_lookup)
-        if cached and cached.get('id'):
-            existing_path = get_audio_path(cached['id'])
-            if existing_path:
-                return cached, existing_path
-
-    # 2. Dedup in-flight requests
-    inflight_key = f"refresh:{normalized}:{download}" if refresh else f"{normalized or query}:{download}"
-    future: asyncio.Future | None = None
-    is_owner = False
-    async with _inflight_queries_lock:
-        future = _inflight_queries.get(inflight_key)
-        if future is None:
-            future = asyncio.get_running_loop().create_future()
-            _inflight_queries[inflight_key] = future
-            is_owner = True
-
-    if not is_owner:
-        result = await asyncio.shield(future)
-        return _clone_info(result[0]), result[1]
-
-    # 3. yt-dlp call
-    try:
-        loop = asyncio.get_running_loop()
-
-        def _do_extract():
-            opts = _build_ydl_options(YDL_OPTIONS_FAST)
-            opts['skip_download'] = not download
-            
-            if query.startswith(('http://', 'https://')):
-                opts['default_search'] = 'auto'
-            
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(query, download=download)
-            except yt_dlp.utils.DownloadError as e:
-                err_msg = str(e)
-                if "[DRM]" in err_msg or "DRM protected" in err_msg:
-                    raise Exception("This content is DRM protected and cannot be played directly. Try searching for the song name instead.") from e
-                raise
-
-            if info and 'entries' in info:
-                if not info['entries']:
-                    raise Exception("No results found.")
-                info = info['entries'][0]
-
-            if not info or not info.get('id'):
-                raise Exception("Could not extract video info.")
-
-            # If we downloaded it, return the path. Otherwise, return the stream URL.
-            if download:
-                path = get_audio_path(info['id'])
-                if not path:
-                    raise Exception(f"Download finished but file not found for {info.get('id')}")
-                return info, path
-            
-            return info, info['url']
-
-        async with _extract_semaphore:
-            info, result_path = await loop.run_in_executor(_ydl_executor, _do_extract)
-
-        if download:
-            await _store_cached_info(info, query, original_query if is_spotify else None)
-        
-        future.set_result((_clone_info(info), result_path))
-        return info, result_path
-
-    except Exception as exc:
-        logger.warning("yt-dlp extraction failed query=%r refresh=%s download=%s: %s", query, refresh, download, exc)
-        future.set_exception(exc)
-        future.exception()
-        raise
-    finally:
-        async with _inflight_queries_lock:
-            if _inflight_queries.get(inflight_key) is future:
-                _inflight_queries.pop(inflight_key, None)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _parse_cookies_for_ffmpeg(cookiefile: str) -> str:
-    """Parse Netscape cookies file into a semicolon-separated string for FFmpeg."""
-    if not cookiefile or not os.path.exists(cookiefile):
-        return ""
-    
-    cookies = []
-    try:
-        with open(cookiefile, 'r') as f:
-            for line in f:
-                if not line.strip() or line.startswith('#'):
-                    continue
-                parts = line.split('\t')
-                if len(parts) >= 7:
-                    # name is at index 5, value at index 6
-                    cookies.append(f"{parts[5]}={parts[6].strip()}")
-        return "; ".join(cookies)
-    except Exception as e:
-        logger.warning("Failed to parse cookies for FFmpeg: %s", e)
-        return ""
-
+_STARTUP_WARMUP_DELAY = int(os.getenv("MUSIC_WARMUP_DELAY", "2"))
+_PREFETCH_DELAY_SECONDS = float(os.getenv("MUSIC_PREFETCH_DELAY", "2"))
 
 # ── Views ───────────────────────────────────────────────────────────────────
 
@@ -524,7 +125,7 @@ class Music(commands.Cog):
         return self._states[guild_id]
 
     async def cog_load(self):
-        cleanup_all()
+        await asyncio.to_thread(cleanup_all)
         self._warmup_task = asyncio.create_task(self._warmup_extractors())
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         self._voice_watchdog_task = asyncio.create_task(self._voice_watchdog())
@@ -546,41 +147,17 @@ class Music(commands.Cog):
         """Periodically remove old audio files to save disk space."""
         try:
             while True:
-                await asyncio.sleep(3600)  # Every hour
-                now = time.time()
-                for f in glob.glob(os.path.join(TEMP_DIR, '*')):
-                    try:
-                        # If file is older than 2 hours, remove it
-                        if os.path.isfile(f) and now - os.path.getmtime(f) > 7200:
-                            os.remove(f)
-                    except Exception:
-                        pass
+                await asyncio.sleep(3600)
+                await asyncio.to_thread(cleanup_stale_audio_files, 7200)
         except asyncio.CancelledError:
             pass
 
     async def _warmup_extractors(self):
         try:
-            await asyncio.sleep(_STARTUP_WARMUP_DELAY)
-            loop = asyncio.get_running_loop()
-            start = time.perf_counter()
-            # Warm up by triggering lazy extractor loading
-            await loop.run_in_executor(
-                _ydl_executor,
-                lambda: yt_dlp.YoutubeDL(_build_ydl_options(YDL_OPTIONS_FAST))._ies,
+            await warmup_extractors(
+                warmup_youtube=_STARTUP_WARMUP_YOUTUBE,
+                delay_seconds=_STARTUP_WARMUP_DELAY,
             )
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.info("Music extractors warmed in %.0fms", elapsed_ms)
-
-            if _STARTUP_WARMUP_YOUTUBE:
-                start = time.perf_counter()
-                await loop.run_in_executor(
-                    _ydl_executor,
-                    lambda: yt_dlp.YoutubeDL(_build_ydl_options(YDL_OPTIONS_FAST)).extract_info(
-                        "ytsearch1:youtube", download=False
-                    ),
-                )
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                logger.info("Music YouTube warmup finished in %.0fms", elapsed_ms)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -609,6 +186,51 @@ class Music(commands.Cog):
         if st.empty_disconnect_task and not st.empty_disconnect_task.done():
             st.empty_disconnect_task.cancel()
         st.empty_disconnect_task = None
+
+    def _cancel_prefetch(self, st: GuildState):
+        if st.prefetch_task and not st.prefetch_task.done():
+            st.prefetch_task.cancel()
+        st.prefetch_task = None
+
+    def _reset_playback_state(self, st: GuildState, *, clear_queue: bool = False):
+        if clear_queue:
+            st.queue.clear()
+        st.current_title = None
+        st.current_info = None
+        st.current_file = None
+        st.is_loading = False
+        st.playback_started_at = None
+        self._cancel_prefetch(st)
+
+    @staticmethod
+    def _track_query(info: dict) -> str | None:
+        return info.get("original_url") or info.get("webpage_url") or info.get("title")
+
+    async def _resolve_track_audio(
+        self,
+        info: dict,
+        *,
+        allow_stream_fallback: bool,
+    ) -> tuple[dict, str]:
+        audio_path = info.get("_audio_path")
+        if audio_path and (audio_path.startswith("http") or os.path.exists(audio_path)):
+            return info, audio_path
+
+        query = self._track_query(info)
+        if not query:
+            raise RuntimeError("Track is missing a playable URL or title.")
+
+        try:
+            resolved_info, audio_path = await search_and_download(query, download=True)
+        except Exception:
+            if not allow_stream_fallback:
+                raise
+            logger.warning("Download failed for track, falling back to stream query=%r", query, exc_info=True)
+            resolved_info, audio_path = await search_and_download(query, download=False)
+
+        resolved_info["original_url"] = info.get("original_url", query)
+        resolved_info["_audio_path"] = audio_path
+        return resolved_info, audio_path
 
     def _schedule_empty_disconnect(self, guild: discord.Guild):
         st = self.state(guild.id)
@@ -671,9 +293,9 @@ class Music(commands.Cog):
             ])
             
             # Use headers for cookies and user-agent
-            auth_cfg = _get_yt_dlp_auth_config()
-            cookiefile = auth_cfg.get("cookiefile") or YDL_OPTIONS_FAST.get("cookiefile")
-            user_agent = os.getenv("USER_AGENT") or YDL_OPTIONS_FAST.get("user_agent")
+            auth_cfg = get_yt_dlp_auth_config()
+            cookiefile = auth_cfg.get("cookiefile")
+            user_agent = os.getenv("USER_AGENT") or DEFAULT_USER_AGENT
             
             headers = []
             if user_agent:
@@ -681,7 +303,7 @@ class Music(commands.Cog):
             # Required for c=WEB YouTube URLs — without this FFmpeg gets 403
             headers.append("Referer: https://www.youtube.com/")
             
-            cookie_str = _parse_cookies_for_ffmpeg(cookiefile)
+            cookie_str = parse_cookies_for_ffmpeg(cookiefile)
             if cookie_str:
                 headers.append(f"Cookie: {cookie_str}")
             
@@ -755,7 +377,7 @@ class Music(commands.Cog):
         logger.info(
             "Starting playback guild=%s track=%s path=%s seek=%ss volume=%.2f",
             guild.id,
-            _track_label(info),
+            track_label(info),
             audio_path,
             seek_seconds,
             st.volume,
@@ -794,7 +416,7 @@ class Music(commands.Cog):
                 "Attempting voice recovery guild=%s reason=%s current_track=%s queue_len=%s",
                 guild_id,
                 reason,
-                _track_label(st.current_info),
+                track_label(st.current_info),
                 len(st.queue),
             )
             if not await self._connect_to_voice_channel(guild, voice_channel):
@@ -808,7 +430,7 @@ class Music(commands.Cog):
                 try:
                     await self._start_playback(
                         guild,
-                        _clone_info(st.current_info),
+                        clone_info(st.current_info),
                         audio_path=st.current_file,
                         announce_channel=text_channel,
                         announce_text="⚠️ Voice connection dropped. Reconnected and resumed the current track.",
@@ -819,7 +441,7 @@ class Music(commands.Cog):
                     logger.exception(
                         "Failed to resume current track guild=%s track=%s: %s",
                         guild_id,
-                        _track_label(st.current_info),
+                        track_label(st.current_info),
                         exc,
                     )
 
@@ -837,7 +459,7 @@ class Music(commands.Cog):
                     logger.exception(
                         "Failed to continue queue after reconnect guild=%s next_track=%s: %s",
                         guild_id,
-                        _track_label(next_info),
+                        track_label(next_info),
                         exc,
                     )
 
@@ -887,7 +509,7 @@ class Music(commands.Cog):
                 guild_id,
                 vc.channel,
                 AUTO_DISCONNECT_EMPTY_DELAY,
-                _track_label(st.current_info),
+                track_label(st.current_info),
                 len(st.queue),
             )
 
@@ -917,17 +539,9 @@ class Music(commands.Cog):
                 vc.channel,
                 AUTO_DISCONNECT_EMPTY_DELAY,
             )
-            st.queue.clear()
-            st.current_title = None
-            st.current_info = None
-            st.current_file = None
-            st.is_loading = False
-            st.playback_started_at = None
-            if st.prefetch_task and not st.prefetch_task.done():
-                st.prefetch_task.cancel()
-                st.prefetch_task = None
+            self._reset_playback_state(st, clear_queue=True)
             await vc.disconnect()
-            cleanup_all()
+            await asyncio.to_thread(cleanup_all)
             gc.collect()
         except asyncio.CancelledError:
             logger.info("Cancelled empty-channel timer guild=%s", guild_id)
@@ -1069,22 +683,22 @@ class Music(commands.Cog):
         st = self.state(guild_id)
         current_task = asyncio.current_task()
         try:
-            # Small delay to let the current playback stabilize
-            await asyncio.sleep(5)
+            # Short configurable delay so prefetch starts soon without competing with track startup.
+            await asyncio.sleep(_PREFETCH_DELAY_SECONDS)
             
             if not st.queue:
                 return
             next_track = st.queue[0]
             try:
-                query = next_track.get('original_url') or next_track.get('webpage_url') or next_track.get('title')
+                query = self._track_query(next_track)
                 if query:
-                    info, path = await search_and_download(query)
+                    info, path = await self._resolve_track_audio(next_track, allow_stream_fallback=False)
                     if st.queue and st.queue[0] is next_track:
                         st.queue[0].update(info)
-                        st.queue[0]['_audio_path'] = path
-                        logger.info("Prefetched next track guild=%s track=%s", guild_id, _track_label(info))
+                        st.queue[0]["_audio_path"] = path
+                        logger.info("Prefetched next track guild=%s track=%s", guild_id, track_label(info))
             except Exception as e:
-                logger.warning("Prefetch failed guild=%s track=%s: %s", guild_id, _track_label(next_track), e)
+                logger.warning("Prefetch failed guild=%s track=%s: %s", guild_id, track_label(next_track), e)
         finally:
             if st.prefetch_task is current_task:
                 st.prefetch_task = None
@@ -1116,24 +730,20 @@ class Music(commands.Cog):
         async with st.advance_lock:
             next_info = None
             if st.loop_mode == "song" and st.current_info:
-                next_info = _clone_info(st.current_info)
+                next_info = clone_info(st.current_info)
                 # Preserve audio path for looped song
                 if st.current_file:
                     next_info['_audio_path'] = st.current_file
             else:
                 if st.loop_mode == "queue" and st.current_info:
-                    queued = _clone_info(st.current_info)
+                    queued = clone_info(st.current_info)
                     if st.current_file:
                         queued['_audio_path'] = st.current_file
                     st.queue.append(queued)
                 if st.queue:
                     next_info = st.queue.popleft()
                 else:
-                    st.current_title = None
-                    st.current_info = None
-                    st.current_file = None
-                    st.is_loading = False
-                    st.playback_started_at = None
+                    self._reset_playback_state(st)
 
         if next_info:
             guild = self.bot.get_guild(guild_id)
@@ -1171,7 +781,7 @@ class Music(commands.Cog):
             # Check if it's a Spotify playlist/album for lazy loading
             playlist_tracks = None
             if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
-                playlist_tracks = await _extract_spotify_metadata(query)
+                playlist_tracks = await extract_spotify_metadata(query)
 
             if isinstance(playlist_tracks, list) and playlist_tracks:
                 logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
@@ -1308,9 +918,7 @@ class Music(commands.Cog):
         """Clear the entire queue."""
         st = self.state(ctx.guild.id)
         st.queue.clear()
-        if st.prefetch_task and not st.prefetch_task.done():
-            st.prefetch_task.cancel()
-            st.prefetch_task = None
+        self._cancel_prefetch(st)
         await ctx.send("\U0001f5d1\ufe0f Queue cleared.")
 
     @commands.command(aliases=['rm'])
@@ -1347,18 +955,10 @@ class Music(commands.Cog):
         """Stop playback, clear the queue, and leave."""
         st = self.state(ctx.guild.id)
         self._mark_expected_disconnect(st)
-        st.queue.clear()
-        st.current_title = None
-        st.current_info = None
-        st.current_file = None
-        st.is_loading = False
-        st.playback_started_at = None
-        if st.prefetch_task and not st.prefetch_task.done():
-            st.prefetch_task.cancel()
-            st.prefetch_task = None
+        self._reset_playback_state(st, clear_queue=True)
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
-        cleanup_all()
+        await asyncio.to_thread(cleanup_all)
         gc.collect()
         await ctx.send("\u23f9\ufe0f Stopped and left the channel.")
 

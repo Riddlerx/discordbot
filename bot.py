@@ -125,12 +125,80 @@ async def coin(ctx):
     result = random.choice(["Heads", "Tails"])
     await ctx.send(f"🪙 {ctx.author.mention} flipped **{result}**!")
 
+def _command_usage(ctx: commands.Context) -> str | None:
+    if not ctx.command:
+        return None
+    signature = ctx.command.signature.strip()
+    if signature:
+        return f"{ctx.clean_prefix}{ctx.command.qualified_name} {signature}"
+    return f"{ctx.clean_prefix}{ctx.command.qualified_name}"
+
+
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
+    if ctx.command and ctx.command.has_error_handler():
         return
-    logger.exception("Command error: %s", error)
-    await ctx.send(f"⚠️ Error: {error}")
+
+    cog = ctx.cog
+    if cog and cog.has_error_handler():
+        return
+
+    original = getattr(error, "original", error)
+
+    if isinstance(original, commands.CommandNotFound):
+        return
+
+    usage = _command_usage(ctx)
+
+    if isinstance(original, commands.MissingRequiredArgument):
+        message = "⚠️ Missing required argument."
+        if usage:
+            message = f"{message} Usage: `{usage}`"
+        await ctx.send(message)
+        return
+
+    if isinstance(original, (commands.BadArgument, commands.BadLiteral, commands.UserInputError)):
+        message = "⚠️ Invalid command arguments."
+        if usage:
+            message = f"{message} Usage: `{usage}`"
+        await ctx.send(message)
+        return
+
+    if isinstance(original, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Slow down. Try again in {original.retry_after:.1f}s.")
+        return
+
+    if isinstance(original, commands.MissingPermissions):
+        missing = ", ".join(original.missing_permissions)
+        await ctx.send(f"⛔ You are missing permissions for that command: `{missing}`")
+        return
+
+    if isinstance(original, commands.BotMissingPermissions):
+        missing = ", ".join(original.missing_permissions)
+        await ctx.send(f"⛔ I am missing permissions for that command: `{missing}`")
+        return
+
+    if isinstance(original, commands.NoPrivateMessage):
+        await ctx.send("⛔ This command can only be used in a server.")
+        return
+
+    if isinstance(original, commands.DisabledCommand):
+        await ctx.send("⛔ That command is currently disabled.")
+        return
+
+    if isinstance(original, commands.CheckFailure):
+        await ctx.send("⛔ You cannot use that command here.")
+        return
+
+    logger.exception(
+        "Unhandled command error guild=%s channel=%s author=%s command=%s",
+        getattr(ctx.guild, "id", None),
+        getattr(ctx.channel, "id", None),
+        getattr(ctx.author, "id", None),
+        getattr(ctx.command, "qualified_name", None),
+        exc_info=original,
+    )
+    await ctx.send("⚠️ Something went wrong while running that command.")
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:

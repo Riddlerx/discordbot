@@ -19,7 +19,7 @@ REALMS = {
     "illidan": 57
 }
 
-STATE_FILE = "bot_state.json"
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
 CACHE_DURATION = 1800  # 30 minutes
 
 class ItemSelectionView(discord.ui.View):
@@ -36,21 +36,6 @@ class ItemSelectionView(discord.ui.View):
 
 
 TIER_LABELS = {1: "Q1 — Base", 2: "Q2 — Crafted", 3: "Q3 — Max"}
-
-
-class TierSelectionView(discord.ui.View):
-    def __init__(self, variants: list, callback):
-        super().__init__(timeout=60)
-        self.callback_func = callback
-        for i, item in enumerate(variants[:5]):
-            tier = item.get("tier")
-            label = TIER_LABELS.get(tier, f"Tier {tier}") if isinstance(tier, int) else "Standard"
-            button = discord.ui.Button(label=label, custom_id=str(i))
-            button.callback = self.button_callback
-            self.add_item(button)
-
-    async def button_callback(self, interaction: discord.Interaction):
-        await self.callback_func(interaction, int(interaction.data['custom_id']))
 
 
 class WoW(commands.Cog):
@@ -73,32 +58,43 @@ class WoW(commands.Cog):
 
         self.blizzard_semaphore = asyncio.Semaphore(10)
         self.auto_update_task: Optional[asyncio.Task] = None
+        self.state_lock = asyncio.Lock()
 
-        self.load_state()
+    async def cog_load(self):
+        await self.load_state()
 
     def cog_unload(self):
         if self.auto_update_task:
             self.auto_update_task.cancel()
 
-    def load_state(self):
-        """Load persistent bot state."""
-        if os.path.exists(STATE_FILE):
+    def _read_state_file(self) -> dict:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+
+    def _write_state_file(self, state: dict) -> None:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+
+    async def load_state(self):
+        """Load persistent bot state without blocking the event loop."""
+        async with self.state_lock:
+            if not os.path.exists(STATE_FILE):
+                return
             try:
-                with open(STATE_FILE, "r") as f:
-                    state = json.load(f)
-                    self.guild_vault_message_id = state.get("guild_vault_message_id")
-                    self.last_content = state.get("last_content")
+                state = await asyncio.to_thread(self._read_state_file)
+                self.guild_vault_message_id = state.get("guild_vault_message_id")
+                self.last_content = state.get("last_content")
             except Exception as e:
                 logger.warning("Error loading state: %s", e)
 
-    def save_state(self):
-        """Save persistent bot state."""
+    async def save_state(self):
+        """Persist bot state without blocking the event loop."""
         state = {
             "guild_vault_message_id": self.guild_vault_message_id,
             "last_content": self.last_content
         }
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        async with self.state_lock:
+            await asyncio.to_thread(self._write_state_file, state)
 
     async def safe_get(self, session: aiohttp.ClientSession, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, retries: int = 3, delay: int = 1) -> Optional[Dict]:
         """Get JSON data safely with retries and error handling."""
@@ -647,7 +643,7 @@ class WoW(commands.Cog):
                     except discord.NotFound:
                         logger.warning(f"Leaderboard message {self.guild_vault_message_id} not found. Stopping auto-update until manual reset.")
                         self.guild_vault_message_id = None
-                        self.save_state()
+                        await self.save_state()
                         continue
                     except discord.Forbidden:
                         logger.error(f"Missing permissions to fetch leaderboard message in {channel.name}")
@@ -659,7 +655,7 @@ class WoW(commands.Cog):
                         try:
                             await message.edit(content=new_content, embed=None)
                             self.last_content = new_content
-                            self.save_state()
+                            await self.save_state()
                             logger.info("Updated leaderboard text message_id=%s", self.guild_vault_message_id)
                         except discord.HTTPException as e:
                             logger.error(f"Failed to edit leaderboard message: {e}")
@@ -682,7 +678,7 @@ class WoW(commands.Cog):
                         message = await ctx.send(content)
                         self.guild_vault_message_id = message.id
                         self.last_content = content
-                        self.save_state()
+                        await self.save_state()
                         return
 
                     # Otherwise, paginate (though build_guild_vault_text now truncates to fit)
