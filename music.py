@@ -384,6 +384,8 @@ class Music(commands.Cog):
         )
         vc.play(source, after=self._make_after_callback(guild.id))
         self._schedule_prefetch(guild.id)
+        if audio_path.startswith("http"):
+            self._schedule_current_track_download(guild.id)
 
     async def _recover_voice_connection(self, guild_id: int, *, reason: str):
         guild = self.bot.get_guild(guild_id)
@@ -678,6 +680,38 @@ class Music(commands.Cog):
             return
         st.prefetch_task = self.bot.loop.create_task(self._prefetch_next(guild_id))
 
+    def _schedule_current_track_download(self, guild_id: int):
+        st = self.state(guild_id)
+        if st.is_loading:
+            return
+        self.bot.loop.create_task(self._download_current_track(guild_id))
+
+    async def _download_current_track(self, guild_id: int):
+        """Download the current stream track in the background for stability and recovery."""
+        st = self.state(guild_id)
+        await asyncio.sleep(_PREFETCH_DELAY_SECONDS)
+
+        info = st.current_info
+        current_file = st.current_file
+        if not info or not current_file or not current_file.startswith("http"):
+            return
+
+        query = self._track_query(info)
+        if not query:
+            return
+
+        try:
+            resolved_info, path = await search_and_download(query, download=True)
+        except Exception as exc:
+            logger.debug("Background download failed guild=%s track=%s: %s", guild_id, track_label(info), exc)
+            return
+
+        if st.current_info and st.current_info.get("id") == info.get("id") and st.current_file == current_file:
+            st.current_info.update(resolved_info)
+            st.current_info["_audio_path"] = path
+            st.current_file = path
+            logger.info("Upgraded current track to local file guild=%s track=%s", guild_id, track_label(resolved_info))
+
     async def _prefetch_next(self, guild_id: int):
         """Pre-download audio for the next track while current plays."""
         st = self.state(guild_id)
@@ -685,7 +719,7 @@ class Music(commands.Cog):
         try:
             # Short configurable delay so prefetch starts soon without competing with track startup.
             await asyncio.sleep(_PREFETCH_DELAY_SECONDS)
-            
+
             if not st.queue:
                 return
             next_track = st.queue[0]
