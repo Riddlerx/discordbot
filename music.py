@@ -785,8 +785,8 @@ class Music(commands.Cog):
 
             if isinstance(playlist_tracks, list) and playlist_tracks:
                 logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
-                # Resolve first track immediately
-                info, audio_path = await search_and_download(playlist_tracks[0], download=True)
+                # Resolve first track immediately using a stream URL so playback starts faster.
+                info, audio_path = await search_and_download(playlist_tracks[0], download=False)
                 info['original_url'] = playlist_tracks[0]
                 info['_audio_path'] = audio_path
 
@@ -801,9 +801,9 @@ class Music(commands.Cog):
             else:
                 # Single track or normal search
                 s_dl = time.perf_counter()
-                info, audio_path = await search_and_download(query, download=True)
+                info, audio_path = await search_and_download(query, download=False)
                 elapsed = time.perf_counter() - s_dl
-                logger.info("Search+download guild=%s took %.2fs", ctx.guild.id, elapsed)
+                logger.info("Search+stream guild=%s took %.2fs", ctx.guild.id, elapsed)
 
                 info['original_url'] = query
                 info['_audio_path'] = audio_path
