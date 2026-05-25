@@ -30,6 +30,7 @@ _STARTUP_WARMUP_YOUTUBE = os.getenv("MUSIC_WARMUP_YOUTUBE", "").strip().lower() 
 _STARTUP_WARMUP_DELAY = int(os.getenv("MUSIC_WARMUP_DELAY", "2"))
 _PREFETCH_DELAY_SECONDS = float(os.getenv("MUSIC_PREFETCH_DELAY", "2"))
 _CLEANUP_ON_START = os.getenv("MUSIC_CLEANUP_ON_START", "false").strip().lower() in ("1", "true", "yes", "on")
+_FAST_START_STREAMING = os.getenv("MUSIC_FAST_START_STREAMING", "false").strip().lower() in ("1", "true", "yes", "on")
 
 # ── Views ───────────────────────────────────────────────────────────────────
 
@@ -842,11 +843,20 @@ class Music(commands.Cog):
             else:
                 # Single track or normal search
                 s_dl = time.perf_counter()
-                # On Cloud VM, direct streaming (download=False) often hits 403 Forbidden.
-                # Forcing download=True here for the first track ensures stability.
-                info, audio_path = await search_and_download(query, download=True)
+                try:
+                    info, audio_path = await search_and_download(query, download=not _FAST_START_STREAMING)
+                except Exception:
+                    if not _FAST_START_STREAMING:
+                        raise
+                    logger.warning("Fast-start stream failed, retrying with download query=%r", query, exc_info=True)
+                    info, audio_path = await search_and_download(query, download=True)
                 elapsed = time.perf_counter() - s_dl
-                logger.info("Search+download guild=%s took %.2fs", ctx.guild.id, elapsed)
+                logger.info(
+                    "Search+%s guild=%s took %.2fs",
+                    "download" if not _FAST_START_STREAMING else "stream",
+                    ctx.guild.id,
+                    elapsed,
+                )
 
                 info['original_url'] = query
                 info['_audio_path'] = audio_path

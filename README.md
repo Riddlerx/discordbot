@@ -21,6 +21,7 @@ The bot authenticates with YouTube using one of the following methods, in order 
 - `MUSIC_WARMUP_DELAY`: Delay before extractor warmup starts. Default: `2`.
 - `MUSIC_WARMUP_YOUTUBE=1`: Warms a real YouTube lookup on startup to reduce first-play latency.
 - `MUSIC_PREFETCH_DELAY`: Delay before prefetching the next queued track. Default: `2`.
+- `MUSIC_FAST_START_STREAMING=1`: Start playback from a stream URL first, then download in the background for recovery. Default is off for reliability.
 - `MUSIC_CLEANUP_ON_START=1`: Delete all cached audio on startup. Default is off, so restarts can reuse recent downloads.
 - `AUTO_DISCONNECT_EMPTY_DELAY`: Seconds to stay in an empty voice channel before disconnecting. Default: `60`.
 
