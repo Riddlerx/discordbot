@@ -70,6 +70,8 @@ async def help_command(ctx):
         "`!clear` - Empty the queue\n"
         "`!roll <max>` - Roll 1-100 (or max)\n"
         "`!coin` - Flip a coin\n\n"
+        "🤖 **AI**\n"
+        "`!ask <prompt>` - Ask the AI a question\n\n"
         "💰 **Economy & WoW**\n"
         "`!price item[:realm]` - Check WoW AH\n"
         "`!lookup name[-realm]` - WoW character stats\n"
@@ -214,6 +216,13 @@ if __name__ == "__main__":
                     logger.info("WoW extension loaded")
                 except Exception as e:
                     logger.exception("Failed to load WoW extension: %s", e)
+
+                # Load AI Cog
+                try:
+                    await bot.load_extension('ai_chat')
+                    logger.info("AI extension loaded")
+                except Exception as e:
+                    logger.exception("Failed to load AI extension: %s", e)
 
                 # Load Music Cog
                 enable_music = os.getenv("ENABLE_MUSIC_FEATURES", "true").lower() in ("true", "1", "yes", "on")
