@@ -27,7 +27,7 @@ YDL_OPTIONS_FAST = {
     "quiet": True,
     "no_warnings": True,
     "no_color": True,
-    "js_runtimes": ["node"],
+    "js_runtimes": {"node": {}},
     "remote_components": "ejs:github",
     "force_ipv4": True,
     "retries": 5,
@@ -192,7 +192,7 @@ def build_ydl_options(base_options: dict) -> dict:
 
     js_runtime = os.getenv("YTDLP_JS_RUNTIME")
     if js_runtime:
-        options["js_runtimes"] = [js_runtime]
+        options["js_runtimes"] = {js_runtime: {}}
 
     remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
     if remote_components:
