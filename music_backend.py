@@ -29,7 +29,6 @@ YDL_OPTIONS_FAST = {
     "no_color": True,
     "js_runtimes": {"node": {}},
     "remote_components": "ejs:github",
-    "force_ipv4": True,
     "retries": 5,
     "fragment_retries": 5,
     "concurrent_fragment_downloads": 5,
@@ -46,8 +45,8 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web", "ios"],
-            "skip": ["hls", "dash"] if False else [],  # Keep them enabled
+            "player_client": ["ios", "android"],
+            "player_skip": ["web", "web_embedded"],
         }
     },
     "lazy_playlist": True,
