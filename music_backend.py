@@ -163,6 +163,10 @@ async def extract_spotify_metadata(url: str) -> list[str] | str | None:
 
 
 def get_yt_dlp_auth_config() -> dict:
+    use_cookies = os.getenv("YTDLP_USE_COOKIES", "false").strip().lower() in ("1", "true", "yes", "on")
+    if not use_cookies:
+        return {}
+
     cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("YOUTUBE_COOKIES_PATH")
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
     auth_options: dict = {}
@@ -176,7 +180,7 @@ def get_yt_dlp_auth_config() -> dict:
             else:
                 logger.error("Configured yt-dlp cookie file is NOT READABLE: %s (Check permissions!)", cookies_path)
         else:
-            logger.warning("Configured yt-dlp cookie file does not exist: %s", cookies_path)
+            logger.info("Configured yt-dlp cookie file does not exist; continuing without cookies: %s", cookies_path)
     elif os.path.exists(DEFAULT_COOKIE_FILE):
         if os.access(DEFAULT_COOKIE_FILE, os.R_OK):
             auth_options["cookiefile"] = DEFAULT_COOKIE_FILE

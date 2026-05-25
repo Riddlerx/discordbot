@@ -31,6 +31,7 @@ _STARTUP_WARMUP_DELAY = int(os.getenv("MUSIC_WARMUP_DELAY", "2"))
 _PREFETCH_DELAY_SECONDS = float(os.getenv("MUSIC_PREFETCH_DELAY", "2"))
 _CLEANUP_ON_START = os.getenv("MUSIC_CLEANUP_ON_START", "false").strip().lower() in ("1", "true", "yes", "on")
 _FAST_START_STREAMING = os.getenv("MUSIC_FAST_START_STREAMING", "false").strip().lower() in ("1", "true", "yes", "on")
+_PREFETCH_ENABLED = os.getenv("MUSIC_PREFETCH_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 
 # ── Views ───────────────────────────────────────────────────────────────────
 
@@ -395,7 +396,7 @@ class Music(commands.Cog):
             st.volume,
         )
         vc.play(source, after=self._make_after_callback(guild.id))
-        if not _FAST_START_STREAMING:
+        if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
             self._schedule_prefetch(guild.id)
             if audio_path.startswith("http"):
                 self._schedule_current_track_download(guild.id)
@@ -882,7 +883,7 @@ class Music(commands.Cog):
                     'original_url': query,
                 })
                 await ctx.send(f"\U0001f4cb Added to queue (#{len(st.queue)}): **{query}**")
-            if not _FAST_START_STREAMING:
+            if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
                 self._schedule_prefetch(ctx)
             return
 
