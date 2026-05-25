@@ -57,7 +57,6 @@ class AIChat(commands.Cog):
                 prompt=prompt,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
-                    include_rai_reasoning=True,
                     output_mime_type="image/jpeg"
                 )
             )
