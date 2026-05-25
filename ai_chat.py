@@ -1,71 +1,49 @@
 import os
 import logging
-import aiohttp
 import discord
 from discord.ext import commands
+import google.generativeai as genai
 
 logger = logging.getLogger("discordbot.ai_chat")
-
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-
 
 class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        self.model_name = "llama-3.3-70b-versatile"
-
-        if self.groq_api_key:
-            logger.info("Groq AI configured (model: %s)", self.model_name)
+        self.api_key = os.getenv("GEMINI_API_KEY")
+        self.model_name = "gemini-1.5-flash"
+        
+        if self.api_key:
+            genai.configure(api_key=self.api_key)
+            self.model = genai.GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=(
+                    "You are a helpful and friendly AI assistant in a Discord server. "
+                    "Keep your responses concise and engaging. Use markdown formatting "
+                    "supported by Discord (bold, italic, code blocks, etc). "
+                    "Respond in the same language as the user's message."
+                )
+            )
+            logger.info("Gemini AI configured (model: %s)", self.model_name)
         else:
-            logger.warning("GROQ_API_KEY not found. AI chat will be disabled.")
+            logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
-    async def _call_groq(self, prompt: str) -> str:
-        """Call the Groq API and return the response text."""
-        headers = {
-            "Authorization": f"Bearer {self.groq_api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful and friendly AI assistant in a Discord server. "
-                        "Keep your responses concise and engaging. Use markdown formatting "
-                        "supported by Discord (bold, italic, code blocks, etc). "
-                        "Respond in the same language as the user's message."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.7,
-            "max_tokens": 1024,
-            "top_p": 0.95,
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_API_URL, headers=headers, json=payload) as resp:
-                data = await resp.json()
-
-                if resp.status == 429:
-                    retry_after = data.get("error", {}).get("message", "")
-                    logger.warning("Groq rate limited: %s", retry_after)
-                    raise RateLimitError(retry_after)
-
-                if resp.status != 200:
-                    error_msg = data.get("error", {}).get("message", f"HTTP {resp.status}")
-                    logger.error("Groq API error (%d): %s", resp.status, error_msg)
-                    raise APIError(error_msg)
-
-                return data["choices"][0]["message"]["content"]
+    async def _call_gemini(self, prompt: str) -> str:
+        """Call the Gemini API and return the response text."""
+        try:
+            response = await self.model.generate_content_async(prompt)
+            if not response.text:
+                logger.warning("Gemini returned an empty response.")
+                return "I'm sorry, I couldn't generate a response."
+            return response.text
+        except Exception as e:
+            logger.error("Error calling Gemini API: %s", e)
+            raise APIError(str(e))
 
     @commands.command(name="ask")
     async def ask(self, ctx, *, prompt: str = None):
         """Ask the AI a question."""
-        if not self.groq_api_key:
-            await ctx.send("⚠️ AI chat is not configured. Missing API key.")
+        if not self.api_key:
+            await ctx.send("⚠️ AI chat is not configured. Missing `GEMINI_API_KEY`.")
             return
 
         if not prompt:
@@ -74,7 +52,7 @@ class AIChat(commands.Cog):
 
         async with ctx.typing():
             try:
-                text = await self._call_groq(prompt)
+                text = await self._call_gemini(prompt)
 
                 # Discord has a 2000 character limit per message
                 if len(text) > 2000:
@@ -85,21 +63,12 @@ class AIChat(commands.Cog):
                 else:
                     await ctx.send(text)
 
-            except RateLimitError:
-                await ctx.send(
-                    "⏳ **Rate limited.** Too many requests right now. "
-                    "Please wait a moment and try again."
-                )
             except APIError as e:
                 logger.error("AI API error: %s", e)
                 await ctx.send("⚠️ The AI service returned an error. Please try again later.")
             except Exception as e:
                 logger.error("Unexpected error in AI chat: %s", e)
                 await ctx.send("⚠️ Something went wrong. Please try again.")
-
-
-class RateLimitError(Exception):
-    pass
 
 
 class APIError(Exception):
