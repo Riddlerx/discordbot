@@ -34,45 +34,62 @@ class AIChat(commands.Cog):
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
-    async def lookup_wow_character(self, name: str, realm: str = "nagrand") -> str:
+    async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
         Lookup a World of Warcraft character's stats, level, class, and progress.
+        If the realm is unknown, the tool will try to find the character on common OCE/US realms.
         
         Args:
             name: The character's name.
-            realm: The character's realm (server). Defaults to 'nagrand'.
+            realm: The character's realm (server). Optional.
         """
         wow_cog = self.bot.get_cog("WoW")
         if not wow_cog:
             return "WoW lookup tool is currently unavailable."
 
+        # Common realms in the user's region (OCE) and major US servers
+        common_realms = ["nagrand", "saurfang", "frostmourne", "barthilas", "jubeithos", "gundrak", "khazgoroth", "amanthul", "area52", "illidan"]
+        
+        realms_to_try = []
+        if realm:
+            clean_realm = realm.lower().replace(" ", "").replace("'", "")
+            realms_to_try.append(clean_realm)
+            # If specified realm is not in common list, add common ones as fallback
+            if clean_realm not in common_realms:
+                realms_to_try.extend(common_realms)
+        else:
+            realms_to_try = common_realms
+
         import aiohttp
         async with aiohttp.ClientSession() as session:
-            try:
-                profile = await wow_cog.get_character_profile(session, name, realm)
-                if not profile:
-                    return f"Character {name} on {realm} not found."
+            for r in realms_to_try:
+                try:
+                    profile = await wow_cog.get_character_profile(session, name, r)
+                    if not profile:
+                        continue
 
-                keys, raid, score = await wow_cog.get_vault_data(session, name, realm)
-                
-                char_class = profile.get("character_class", {}).get("name", "Unknown")
-                level = profile.get("level", 0)
-                ilvl = profile.get("equipped_item_level", 0)
-                guild = profile.get("guild", {}).get("name", "No Guild")
-                
-                return (
-                    f"Name: {profile['name']}\n"
-                    f"Realm: {profile['realm']['name']}\n"
-                    f"Level: {level}\n"
-                    f"Class: {char_class}\n"
-                    f"Item Level: {ilvl}\n"
-                    f"Guild: {guild}\n"
-                    f"M+ Score: {score}\n"
-                    f"Weekly Vault: Keys({keys[0]}/{keys[1]}/{keys[2]}), Raid({'/'.join(raid)})"
-                )
-            except Exception as e:
-                logger.error("Error in AI WoW lookup: %s", e)
-                return f"Error looking up character: {str(e)}"
+                    keys, raid, score = await wow_cog.get_vault_data(session, name, r)
+                    
+                    char_class = profile.get("character_class", {}).get("name", "Unknown")
+                    level = profile.get("level", 0)
+                    ilvl = profile.get("equipped_item_level", 0)
+                    guild = profile.get("guild", {}).get("name", "No Guild")
+                    
+                    return (
+                        f"Found on Realm: {profile['realm']['name']}\n"
+                        f"Name: {profile['name']}\n"
+                        f"Level: {level}\n"
+                        f"Class: {char_class}\n"
+                        f"Item Level: {ilvl}\n"
+                        f"Guild: {guild}\n"
+                        f"M+ Score: {score}\n"
+                        f"Weekly Vault: Keys({keys[0]}/{keys[1]}/{keys[2]}), Raid({'/'.join(raid)})"
+                    )
+                except Exception as e:
+                    logger.warning("Error looking up %s on %s: %s", name, r, e)
+                    continue
+            
+            return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
     async def _call_gemini(self, prompt: str) -> str:
         """Call the Gemini API using the new google-genai SDK."""
