@@ -25,7 +25,7 @@ class AIChat(commands.Cog):
                     "Respond in the same language as the user's message."
                 ),
                 temperature=0.7,
-                max_output_tokens=1024,
+                max_output_tokens=4096,
             )
             logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
         else:
@@ -41,9 +41,20 @@ class AIChat(commands.Cog):
                 config=self.config
             )
             
+            # Log the stop reason and safety ratings if available
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                logger.debug("Gemini stop reason: %s", candidate.finish_reason)
+                if candidate.finish_reason == "SAFETY":
+                    logger.warning("Gemini response blocked by safety filters.")
+                    return "I'm sorry, I can't answer that due to safety guidelines."
+                if candidate.finish_reason == "MAX_TOKENS":
+                    logger.warning("Gemini response reached max output tokens.")
+
             if not response.text:
-                logger.warning("Gemini returned an empty response.")
+                logger.warning("Gemini returned an empty response or was blocked.")
                 return "I'm sorry, I couldn't generate a response."
+            
             return response.text
         except Exception as e:
             logger.error("Error calling Gemini API: %s", e)
