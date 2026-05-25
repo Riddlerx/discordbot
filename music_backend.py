@@ -21,7 +21,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    "format": "bestaudio/best",
+    "format": "bestaudio/ba/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,

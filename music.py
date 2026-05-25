@@ -284,15 +284,15 @@ class Music(commands.Cog):
         is_url = audio_path.startswith("http")
         
         # Base FFmpeg options as a list to avoid shell quoting issues
-        before_options = ["-nostdin", "-thread_queue_size", "8192"]
+        before_options = ["-nostdin"]
         if is_url:
             before_options.extend([
+                "-thread_queue_size", "8192",
                 "-reconnect", "1",
                 "-reconnect_at_eof", "1",
                 "-reconnect_streamed", "1",
                 "-reconnect_delay_max", "10"
             ])
-            
             # Use headers for cookies and user-agent
             auth_cfg = get_yt_dlp_auth_config()
             cookiefile = auth_cfg.get("cookiefile")
@@ -312,6 +312,9 @@ class Music(commands.Cog):
                 # FFmpeg expects headers separated by \r\n and ending with \r\n
                 header_str = "\r\n".join(headers) + "\r\n"
                 before_options.extend(["-headers", header_str])
+        else:
+            # -re is crucial for local files to prevent 'fast start' glitches
+            before_options.extend(["-re"])
 
         if seek_seconds > 0:
             before_options.extend(["-ss", str(seek_seconds)])
