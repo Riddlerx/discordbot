@@ -14,7 +14,7 @@ class AIChat(commands.Cog):
         
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-flash-latest')
+            self.model = genai.GenerativeModel('models/gemini-2.5-flash')
             logger.info("Gemini AI model configured successfully.")
         else:
             logger.warning("GEMINI_API_KEY not found in environment. AI chat will be disabled.")
