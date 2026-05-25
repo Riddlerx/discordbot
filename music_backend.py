@@ -346,55 +346,72 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
         loop = asyncio.get_running_loop()
 
         def do_extract():
-            opts = build_ydl_options(YDL_OPTIONS_FAST)
-            opts["skip_download"] = not download
-            query_is_url = is_url_query(query)
+            def extract_with_options(extract_query: str, *, should_download: bool, playlist_items: str = "1"):
+                opts = build_ydl_options(YDL_OPTIONS_FAST)
+                opts["skip_download"] = not should_download
+                opts["playlist_items"] = playlist_items
+                if is_url_query(extract_query):
+                    opts["default_search"] = "auto"
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(extract_query, download=should_download)
 
-            if query_is_url:
-                opts["default_search"] = "auto"
+            def normalize_extracted_info(info: dict | None) -> dict:
+                if info and "entries" in info:
+                    info = first_playable_video(info["entries"])
+                    if not info:
+                        raise Exception("No playable video results found.")
+                if not is_playable_video_info(info):
+                    raise Exception("Could not extract playable video info.")
+                return info
+
+            def result_from_info(info: dict) -> tuple[dict, str]:
+                if download:
+                    path = get_audio_path(info["id"])
+                    if not path:
+                        raise FileNotFoundError(f"Download finished but file not found for {info.get('id')}")
+                    return info, path
+                return info, info["url"]
+
+            def fallback_search() -> tuple[dict, str]:
+                search_info = extract_with_options(f"ytsearch5:{query}", should_download=False, playlist_items="1:5")
+                info = first_playable_video(search_info.get("entries") if search_info else None)
+                if not info:
+                    raise Exception("No playable video results found.")
+
+                video_query = info.get("webpage_url") or info.get("original_url")
+                if not video_query and info.get("ie_key") == "Youtube":
+                    video_query = f"https://www.youtube.com/watch?v={info['id']}"
+                if not video_query:
+                    video_query = info.get("url")
+                if not video_query:
+                    raise Exception("Search result is missing a playable URL.")
+
+                info = normalize_extracted_info(extract_with_options(video_query, should_download=download))
+                return result_from_info(info)
 
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    if query_is_url:
-                        info = ydl.extract_info(query, download=download)
-                    else:
-                        opts["playlist_items"] = "1:5"
-                        search_info = ydl.extract_info(f"ytsearch5:{query}", download=False)
-                        info = first_playable_video(search_info.get("entries") if search_info else None)
-                        if not info:
-                            raise Exception("No playable video results found.")
+                try:
+                    if is_url_query(query):
+                        info = normalize_extracted_info(extract_with_options(query, should_download=download))
+                        return result_from_info(info)
 
-                        video_query = info.get("webpage_url") or info.get("original_url")
-                        if not video_query and info.get("ie_key") == "Youtube":
-                            video_query = f"https://www.youtube.com/watch?v={info['id']}"
-                        if not video_query:
-                            video_query = info.get("url")
-                        if not video_query:
-                            raise Exception("Search result is missing a playable URL.")
-
-                        opts["playlist_items"] = "1"
-                        info = ydl.extract_info(video_query, download=download)
+                    info = normalize_extracted_info(extract_with_options(query, should_download=download))
+                    return result_from_info(info)
+                except FileNotFoundError as exc:
+                    logger.warning("First yt-dlp result did not create audio, retrying broader search query=%r: %s", query, exc)
+                    if is_url_query(query):
+                        raise
+                    return fallback_search()
+                except Exception as exc:
+                    if is_url_query(query):
+                        raise
+                    logger.warning("First yt-dlp result was not playable, retrying broader search query=%r: %s", query, exc)
+                    return fallback_search()
             except yt_dlp.utils.DownloadError as exc:
                 err_msg = str(exc)
                 if "[DRM]" in err_msg or "DRM protected" in err_msg:
                     raise Exception("This content is DRM protected and cannot be played directly. Try searching for the song name instead.") from exc
                 raise
-
-            if info and "entries" in info:
-                info = first_playable_video(info["entries"])
-                if not info:
-                    raise Exception("No playable video results found.")
-
-            if not is_playable_video_info(info):
-                raise Exception("Could not extract playable video info.")
-
-            if download:
-                path = get_audio_path(info["id"])
-                if not path:
-                    raise Exception(f"Download finished but file not found for {info.get('id')}")
-                return info, path
-
-            return info, info["url"]
 
         async with _extract_semaphore:
             info, result_path = await loop.run_in_executor(_ydl_executor, do_extract)
