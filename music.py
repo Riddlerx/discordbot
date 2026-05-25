@@ -814,6 +814,28 @@ class Music(commands.Cog):
         self._remember_context(ctx)
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
+        vc = ctx.voice_client
+        if vc and (vc.is_playing() or vc.is_paused() or st.is_loading):
+            playlist_tracks = None
+            if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
+                playlist_tracks = await extract_spotify_metadata(query)
+
+            if isinstance(playlist_tracks, list) and playlist_tracks:
+                for track_query in playlist_tracks[:50]:
+                    st.queue.append({
+                        'title': track_query,
+                        'original_url': track_query,
+                    })
+                await ctx.send(f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify.")
+            else:
+                st.queue.append({
+                    'title': query,
+                    'original_url': query,
+                })
+                await ctx.send(f"\U0001f4cb Added to queue (#{len(st.queue)}): **{query}**")
+            self._schedule_prefetch(ctx)
+            return
+
         searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
         voice_start = time.perf_counter()
         voice_task = asyncio.create_task(self._ensure_voice(ctx))
