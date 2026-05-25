@@ -47,31 +47,6 @@ class AIChat(commands.Cog):
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
-    async def _generate_image(self, prompt: str) -> Optional[io.BytesIO]:
-        """Generate an image using Imagen 4 Fast."""
-        try:
-            # Using the 'fast' version which is often available on free tiers
-            response = await self.client.aio.models.generate_images(
-                model="imagen-4.0-fast-generate-001",
-                prompt=prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    output_mime_type="image/jpeg"
-                )
-            )
-            
-            if response.generated_images:
-                # The image data is usually in the 'image' attribute as bytes
-                image_data = response.generated_images[0].image
-                if hasattr(image_data, 'image_bytes'):
-                    return io.BytesIO(image_data.image_bytes)
-                elif isinstance(image_data, bytes):
-                    return io.BytesIO(image_data)
-            return None
-        except Exception as e:
-            logger.error("Error generating image: %s", e)
-            return None
-
     async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
         Lookup a World of Warcraft character's stats, level, class, and progress.
@@ -231,37 +206,6 @@ class AIChat(commands.Cog):
     async def ask_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before asking again.", delete_after=5)
-
-    @commands.command(name="draw")
-    @commands.cooldown(1, 30, commands.BucketType.user)
-    async def draw(self, ctx, *, prompt: str = None):
-        """Generate an AI image from a prompt."""
-        if not self.api_key:
-            await ctx.send("⚠️ AI features are not configured.")
-            return
-
-        if not prompt:
-            await ctx.send("⚠️ Please provide a description. Example: `!draw a cat in a space suit`")
-            return
-
-        logger.info("Processing !draw from %s: %s", ctx.author, prompt)
-        async with ctx.typing():
-            try:
-                image_buffer = await self._generate_image(prompt)
-                if image_buffer:
-                    image_buffer.seek(0)
-                    file = discord.File(fp=image_buffer, filename="generated_image.jpg")
-                    await ctx.send(f"🎨 **Here is your image:** \"{prompt}\"", file=file)
-                else:
-                    await ctx.send("⚠️ Sorry, I couldn't generate that image. It might have been blocked by safety filters or the quota is full.")
-            except Exception as e:
-                logger.exception("Unexpected error in image generation")
-                await ctx.send("⚠️ Something went wrong with the image generator.")
-
-    @draw.error
-    async def draw_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(f"⏳ Image generation has a longer cooldown. Try again in {error.retry_after:.1f}s.", delete_after=5)
 
 
 
