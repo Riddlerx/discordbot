@@ -1,6 +1,8 @@
 import os
+import re
 import logging
-from typing import Optional
+from typing import Optional, Dict
+from collections import OrderedDict
 import discord
 from discord.ext import commands
 from google import genai
@@ -14,8 +16,11 @@ class AIChat(commands.Cog):
         self.api_key = os.getenv("GEMINI_API_KEY")
         # In May 2026, gemini-3.5-flash is the latest stable release.
         self.model_name = "gemini-3.5-flash"
-
         
+        # Simple LRU cache for responses
+        self.cache: Dict[str, str] = OrderedDict()
+        self.cache_max_size = 50
+
         if self.api_key:
             self.client = genai.Client(api_key=self.api_key)
             self.config = types.GenerateContentConfig(
@@ -29,7 +34,9 @@ class AIChat(commands.Cog):
                 ),
                 temperature=0.7,
                 max_output_tokens=4096,
-                tools=[self.lookup_wow_character]
+                tools=[self.lookup_wow_character],
+                # Limit function calls to save quota (20 requests/day is very low)
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(max_remote_calls=3)
             )
             logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
         else:
@@ -94,6 +101,15 @@ class AIChat(commands.Cog):
 
     async def _call_gemini(self, prompt: str) -> str:
         """Call the Gemini API using the new google-genai SDK."""
+        # Check cache first
+        cache_key = prompt.strip().lower()
+        if cache_key in self.cache:
+            logger.info("Cache hit for prompt: %s", cache_key)
+            # Move to end (LRU)
+            val = self.cache.pop(cache_key)
+            self.cache[cache_key] = val
+            return val
+
         logger.debug("Prompting Gemini: %s", prompt)
         try:
             # Using the async client (aio)
@@ -119,12 +135,25 @@ class AIChat(commands.Cog):
                 logger.warning("Gemini returned an empty response or was blocked. Response object: %s", response)
                 return "I'm sorry, I couldn't generate a response."
             
+            # Add to cache
+            self.cache[cache_key] = response.text
+            if len(self.cache) > self.cache_max_size:
+                self.cache.popitem(last=False)
+                
             return response.text
         except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                # Try to find retry time in the error message
+                match = re.search(r"retry in ([\d.]+)s", err_msg)
+                retry_after = f"about {match.group(1)}s" if match else "a while"
+                raise APIError(f"Daily AI quota reached or rate limited. Please try again in {retry_after}.")
+            
             logger.exception("Error calling Gemini API")
-            raise APIError(str(e))
+            raise APIError(err_msg)
 
     @commands.command(name="ask")
+    @commands.cooldown(1, 10, commands.BucketType.user)
     async def ask(self, ctx, *, prompt: str = None):
         """Ask the AI a question."""
         if not self.api_key:
@@ -151,10 +180,16 @@ class AIChat(commands.Cog):
 
             except APIError as e:
                 logger.error("AI API error: %s", e)
-                await ctx.send(f"⚠️ The AI service returned an error: `{e}`")
+                await ctx.send(f"⚠️ {e}")
             except Exception as e:
                 logger.exception("Unexpected error in AI chat")
                 await ctx.send("⚠️ Something went wrong. Please try again.")
+
+    @ask.error
+    async def ask_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before asking again.", delete_after=5)
+
 
 
 class APIError(Exception):
