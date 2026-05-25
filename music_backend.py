@@ -45,8 +45,7 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            "player_client": ["ios", "android"],
-            "player_skip": ["web", "web_embedded"],
+            "player_client": ["ios", "android", "web", "mweb"],
         }
     },
     "lazy_playlist": True,
@@ -169,11 +168,17 @@ def get_yt_dlp_auth_config() -> dict:
         auth_options["cookiesfrombrowser"] = (cookies_from_browser,)
     elif cookies_path:
         if os.path.exists(cookies_path):
-            auth_options["cookiefile"] = cookies_path
+            if os.access(cookies_path, os.R_OK):
+                auth_options["cookiefile"] = cookies_path
+            else:
+                logger.error("Configured yt-dlp cookie file is NOT READABLE: %s (Check permissions!)", cookies_path)
         else:
             logger.warning("Configured yt-dlp cookie file does not exist: %s", cookies_path)
     elif os.path.exists(DEFAULT_COOKIE_FILE):
-        auth_options["cookiefile"] = DEFAULT_COOKIE_FILE
+        if os.access(DEFAULT_COOKIE_FILE, os.R_OK):
+            auth_options["cookiefile"] = DEFAULT_COOKIE_FILE
+        else:
+            logger.warning("Default yt-dlp cookie file is NOT READABLE: %s", DEFAULT_COOKIE_FILE)
 
     return auth_options
 
