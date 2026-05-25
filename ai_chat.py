@@ -11,9 +11,9 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # In 2026, gemini-2.0-flash is likely the standard, but let's try 1.5-flash first 
-        # as requested, or fall back if needed.
-        self.model_name = "gemini-1.5-flash"
+        # In 2026, gemini-2.0-flash is the standard.
+        self.model_name = "gemini-2.0-flash"
+
         
         if self.api_key:
             self.client = genai.Client(api_key=self.api_key)
