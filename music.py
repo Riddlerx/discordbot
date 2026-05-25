@@ -109,6 +109,7 @@ class GuildState:
         self.recovery_lock = asyncio.Lock()
         self.connection_lock = asyncio.Lock()
         self.empty_disconnect_task: asyncio.Task | None = None
+        self.stream_fallback_track_id: str | None = None
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -205,6 +206,7 @@ class Music(commands.Cog):
         st.current_file = None
         st.is_loading = False
         st.playback_started_at = None
+        st.stream_fallback_track_id = None
         self._cancel_prefetch(st)
 
     @staticmethod
@@ -765,6 +767,48 @@ class Music(commands.Cog):
         if error and (vc is None or not vc.is_connected()):
             await self._recover_voice_connection(guild_id, reason=f"playback error: {error}")
             return
+
+        st = self.state(guild_id)
+        played_for = time.monotonic() - st.playback_started_at if st.playback_started_at else None
+        current_id = st.current_info.get("id") if st.current_info else None
+        if (
+            _FAST_START_STREAMING
+            and st.current_info
+            and st.current_file
+            and st.current_file.startswith("http")
+            and current_id
+            and st.stream_fallback_track_id != current_id
+            and (error is not None or played_for is None or played_for < 15)
+        ):
+            st.stream_fallback_track_id = current_id
+            query = self._track_query(st.current_info)
+            text_channel = self._get_text_channel(guild, st) if guild else None
+            logger.warning(
+                "Stream ended too quickly guild=%s track=%s played_for=%s error=%s; retrying as download",
+                guild_id,
+                track_label(st.current_info),
+                f"{played_for:.2f}s" if played_for is not None else "unknown",
+                error,
+            )
+            if text_channel:
+                await text_channel.send("⚠️ Stream failed; retrying with downloaded audio.")
+            try:
+                info, audio_path = await search_and_download(query, download=True)
+                info["original_url"] = query
+                info["_audio_path"] = audio_path
+                await self._start_playback(
+                    guild,
+                    info,
+                    audio_path=audio_path,
+                    announce_channel=text_channel,
+                    announce_text=f"▶️ Now playing: **{info.get('title', 'Unknown')}**",
+                )
+                return
+            except Exception as exc:
+                logger.warning("Downloaded fallback failed guild=%s track=%s: %s", guild_id, track_label(st.current_info), exc)
+                if text_channel:
+                    await text_channel.send(f"❌ Stream fallback failed: {exc}")
+
         self._advance(guild_id)
 
     def _advance(self, guild_id: int):
