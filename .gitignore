@@ -7,3 +7,6 @@ potoken.json
 cookies.txt
 
 deno/
+.env
+.env
+.env.backup

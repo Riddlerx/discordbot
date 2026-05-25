@@ -14,7 +14,13 @@ class AIChat(commands.Cog):
         
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('models/gemini-2.5-flash')
+            self.model = genai.GenerativeModel(
+                'models/gemini-2.5-flash',
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    top_p=0.95,
+                ),
+            )
             logger.info("Gemini AI model configured successfully.")
         else:
             logger.warning("GEMINI_API_KEY not found in environment. AI chat will be disabled.")
@@ -35,12 +41,16 @@ class AIChat(commands.Cog):
             try:
                 # Run the blocking API call in an executor to prevent freezing the bot
                 response = await self.bot.loop.run_in_executor(
-                    None, 
-                    lambda: self.model.generate_content(prompt)
+                    None,
+                    lambda: self.model.generate_content(
+                        ("🔍 Give me the *current* status: " + prompt)
+                        if "current" not in prompt.lower()
+                        else prompt
+                    ),
                 )
                 
                 # Discord has a 2000 character limit per message
-                text = response.text
+                text = response.text.strip()
                 if len(text) > 2000:
                     # If it's too long, truncate it
                     text = text[:1996] + "..."
