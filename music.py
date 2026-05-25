@@ -588,7 +588,6 @@ class Music(commands.Cog):
             await ctx.send(f"\u274c Voice connection failed: {exc}")
             logger.exception("Voice connection failed guild=%s: %s", ctx.guild.id, exc)
             return False
-        return True
 
     async def _play_track(self, ctx: commands.Context, info: dict, *, ensure_voice: bool = True):
         self._remember_context(ctx)

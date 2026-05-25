@@ -14,7 +14,6 @@ class AIChat(commands.Cog):
         
         if self.api_key:
             genai.configure(api_key=self.api_key)
-            # gemini-1.5-flash is best for general fast text chat
             self.model = genai.GenerativeModel('gemini-1.5-flash')
             logger.info("Gemini AI model configured successfully.")
         else:
