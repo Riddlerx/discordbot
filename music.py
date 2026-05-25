@@ -393,9 +393,10 @@ class Music(commands.Cog):
             st.volume,
         )
         vc.play(source, after=self._make_after_callback(guild.id))
-        self._schedule_prefetch(guild.id)
-        if audio_path.startswith("http"):
-            self._schedule_current_track_download(guild.id)
+        if not _FAST_START_STREAMING:
+            self._schedule_prefetch(guild.id)
+            if audio_path.startswith("http"):
+                self._schedule_current_track_download(guild.id)
 
     async def _recover_voice_connection(self, guild_id: int, *, reason: str):
         guild = self.bot.get_guild(guild_id)
@@ -837,7 +838,8 @@ class Music(commands.Cog):
                     'original_url': query,
                 })
                 await ctx.send(f"\U0001f4cb Added to queue (#{len(st.queue)}): **{query}**")
-            self._schedule_prefetch(ctx)
+            if not _FAST_START_STREAMING:
+                self._schedule_prefetch(ctx)
             return
 
         searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
