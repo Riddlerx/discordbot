@@ -16,8 +16,6 @@ from music_backend import (
     cleanup_stale_audio_files,
     clone_info,
     extract_spotify_metadata,
-    get_yt_dlp_auth_config,
-    parse_cookies_for_ffmpeg,
     search_and_download,
     track_label,
     warmup_extractors,
@@ -292,9 +290,6 @@ class Music(commands.Cog):
                 "-reconnect_delay_max", "5"
             ])
             
-            # Use headers for cookies and user-agent
-            auth_cfg = get_yt_dlp_auth_config()
-            cookiefile = auth_cfg.get("cookiefile")
             user_agent = os.getenv("USER_AGENT") or DEFAULT_USER_AGENT
             
             headers = []
@@ -302,10 +297,6 @@ class Music(commands.Cog):
                 headers.append(f"User-Agent: {user_agent}")
             # Required for c=WEB YouTube URLs — without this FFmpeg gets 403
             headers.append("Referer: https://www.youtube.com/")
-            
-            cookie_str = parse_cookies_for_ffmpeg(cookiefile)
-            if cookie_str:
-                headers.append(f"Cookie: {cookie_str}")
             
             if headers:
                 # FFmpeg expects headers separated by \r\n and ending with \r\n
