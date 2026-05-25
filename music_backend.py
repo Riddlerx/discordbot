@@ -277,6 +277,29 @@ def cleanup_stale_audio_files(max_age_seconds: int = 7200):
             pass
 
 
+def is_url_query(query: str) -> bool:
+    return query.startswith(("http://", "https://"))
+
+
+def is_playable_video_info(info: dict | None) -> bool:
+    if not info or not info.get("id"):
+        return False
+    if info.get("_type") in {"channel", "playlist", "multi_video"}:
+        return False
+    if info.get("channel_id") == info.get("id") and str(info.get("id", "")).startswith("UC"):
+        return False
+    if str(info.get("id", "")).startswith("UC") and not info.get("duration"):
+        return False
+    return bool(info.get("url") or info.get("webpage_url") or info.get("original_url"))
+
+
+def first_playable_video(entries) -> dict | None:
+    for entry in entries or []:
+        if is_playable_video_info(entry):
+            return entry
+    return None
+
+
 async def search_and_download(query: str, *, refresh: bool = False, download: bool = True) -> tuple[dict, str]:
     original_query = query
     is_spotify = "open.spotify.com" in query
@@ -325,13 +348,32 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
         def do_extract():
             opts = build_ydl_options(YDL_OPTIONS_FAST)
             opts["skip_download"] = not download
+            query_is_url = is_url_query(query)
 
-            if query.startswith(("http://", "https://")):
+            if query_is_url:
                 opts["default_search"] = "auto"
 
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(query, download=download)
+                    if query_is_url:
+                        info = ydl.extract_info(query, download=download)
+                    else:
+                        opts["playlist_items"] = "1:5"
+                        search_info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+                        info = first_playable_video(search_info.get("entries") if search_info else None)
+                        if not info:
+                            raise Exception("No playable video results found.")
+
+                        video_query = info.get("webpage_url") or info.get("original_url")
+                        if not video_query and info.get("ie_key") == "Youtube":
+                            video_query = f"https://www.youtube.com/watch?v={info['id']}"
+                        if not video_query:
+                            video_query = info.get("url")
+                        if not video_query:
+                            raise Exception("Search result is missing a playable URL.")
+
+                        opts["playlist_items"] = "1"
+                        info = ydl.extract_info(video_query, download=download)
             except yt_dlp.utils.DownloadError as exc:
                 err_msg = str(exc)
                 if "[DRM]" in err_msg or "DRM protected" in err_msg:
@@ -339,12 +381,12 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 raise
 
             if info and "entries" in info:
-                if not info["entries"]:
-                    raise Exception("No results found.")
-                info = info["entries"][0]
+                info = first_playable_video(info["entries"])
+                if not info:
+                    raise Exception("No playable video results found.")
 
-            if not info or not info.get("id"):
-                raise Exception("Could not extract video info.")
+            if not is_playable_video_info(info):
+                raise Exception("Could not extract playable video info.")
 
             if download:
                 path = get_audio_path(info["id"])

@@ -814,6 +814,7 @@ class Music(commands.Cog):
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
         searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
+        voice_start = time.perf_counter()
         voice_task = asyncio.create_task(self._ensure_voice(ctx))
         try:
             s_start = time.perf_counter()
@@ -852,7 +853,13 @@ class Music(commands.Cog):
                 added_msg = f"\U0001f4cb Added to queue: **{info.get('title')}**"
 
             voice_ok = await voice_task
-            logger.info("Voice prepare guild=%s took %.2fs", ctx.guild.id, time.perf_counter() - s_start)
+            logger.info(
+                "Play command prepare guild=%s took %.2fs voice_wait_done=%s voice_elapsed_at_await=%.2fs",
+                ctx.guild.id,
+                time.perf_counter() - s_start,
+                voice_task.done(),
+                time.perf_counter() - voice_start,
+            )
 
         except Exception as e:
             if not voice_task.done():
