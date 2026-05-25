@@ -21,7 +21,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    "format": "bestaudio/ba/best",
+    # Prefer Opus (webm) then M4A for fastest download/quality ratio
+    "format": "ba[ext=webm]/ba[ext=m4a]/ba",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
@@ -30,8 +31,8 @@ YDL_OPTIONS_FAST = {
     "js_runtimes": {"node": {}},
     "remote_components": ["ejs:github"],
     "retries": 5,
-    "fragment_retries": 5,
-    "concurrent_fragment_downloads": 5,
+    "fragment_retries": 10,
+    "concurrent_fragment_downloads": 10,
     "nocheckcertificate": True,
     "youtube_include_dash_manifest": True,
     "youtube_include_hls_manifest": True,
