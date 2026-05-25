@@ -48,11 +48,11 @@ class AIChat(commands.Cog):
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
     async def _generate_image(self, prompt: str) -> Optional[io.BytesIO]:
-        """Generate an image using Imagen 4."""
+        """Generate an image using Imagen 4 Fast."""
         try:
-            # The correct model ID for Imagen 4 in May 2026
+            # Using the 'fast' version which is often available on free tiers
             response = await self.client.aio.models.generate_images(
-                model="imagen-4.0-generate-001",
+                model="imagen-4.0-fast-generate-001",
                 prompt=prompt,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
