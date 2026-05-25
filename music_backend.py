@@ -286,10 +286,17 @@ def is_playable_video_info(info: dict | None) -> bool:
         return False
     if info.get("_type") in {"channel", "playlist", "multi_video"}:
         return False
-    if info.get("channel_id") == info.get("id") and str(info.get("id", "")).startswith("UC"):
+
+    video_id = str(info.get("id", ""))
+    if info.get("channel_id") == info.get("id") and video_id.startswith("UC"):
         return False
-    if str(info.get("id", "")).startswith("UC") and not info.get("duration"):
+    if video_id.startswith("UC") and not info.get("duration"):
         return False
+
+    # yt-dlp search results can be flat entries with only an 11-char YouTube id.
+    if info.get("ie_key") == "Youtube" and len(video_id) == 11:
+        return True
+
     return bool(info.get("url") or info.get("webpage_url") or info.get("original_url"))
 
 
@@ -346,6 +353,10 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
         loop = asyncio.get_running_loop()
 
         def do_extract():
+            search_query = query
+            if not is_url_query(query) and not re.search(r"\b(audio|lyrics|song|official|music|mv|video)\b", query, re.I):
+                search_query = f"{query} audio"
+
             def extract_with_options(extract_query: str, *, should_download: bool, playlist_items: str = "1"):
                 opts = build_ydl_options(YDL_OPTIONS_FAST)
                 opts["skip_download"] = not should_download
@@ -373,7 +384,7 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 return info, info["url"]
 
             def fallback_search() -> tuple[dict, str]:
-                search_info = extract_with_options(f"ytsearch5:{query}", should_download=False, playlist_items="1:5")
+                search_info = extract_with_options(f"ytsearch5:{search_query}", should_download=False, playlist_items="1:5")
                 info = first_playable_video(search_info.get("entries") if search_info else None)
                 if not info:
                     raise Exception("No playable video results found.")
@@ -395,7 +406,7 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                         info = normalize_extracted_info(extract_with_options(query, should_download=download))
                         return result_from_info(info)
 
-                    info = normalize_extracted_info(extract_with_options(query, should_download=download))
+                    info = normalize_extracted_info(extract_with_options(search_query, should_download=download))
                     return result_from_info(info)
                 except FileNotFoundError as exc:
                     logger.warning("First yt-dlp result did not create audio, retrying broader search query=%r: %s", query, exc)
