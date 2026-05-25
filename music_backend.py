@@ -44,7 +44,7 @@ YDL_OPTIONS_FAST = {
     "cachedir": os.path.join(tempfile.gettempdir(), "yt_dlp_cache"),
     "user_agent": DEFAULT_USER_AGENT,
     "proxy": None,
-    "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+    "extractor_args": {},
     "lazy_playlist": True,
     "playlist_items": "1",
     "noprogress": True,
