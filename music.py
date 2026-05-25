@@ -288,8 +288,9 @@ class Music(commands.Cog):
         if is_url:
             before_options.extend([
                 "-reconnect", "1",
+                "-reconnect_at_eof", "1",
                 "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5"
+                "-reconnect_delay_max", "10"
             ])
             
             # Use headers for cookies and user-agent
@@ -297,11 +298,11 @@ class Music(commands.Cog):
             cookiefile = auth_cfg.get("cookiefile")
             user_agent = os.getenv("USER_AGENT") or DEFAULT_USER_AGENT
             
-            headers = []
-            if user_agent:
-                headers.append(f"User-Agent: {user_agent}")
-            # Required for c=WEB YouTube URLs — without this FFmpeg gets 403
-            headers.append("Referer: https://www.youtube.com/")
+            headers = [
+                f"User-Agent: {user_agent}",
+                "Referer: https://www.youtube.com/",
+                "Origin: https://www.youtube.com"
+            ]
             
             cookie_str = parse_cookies_for_ffmpeg(cookiefile)
             if cookie_str:

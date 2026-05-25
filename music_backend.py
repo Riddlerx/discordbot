@@ -24,8 +24,8 @@ YDL_OPTIONS_FAST = {
     "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
-    "quiet": False,
-    "no_warnings": False,
+    "quiet": True,
+    "no_warnings": True,
     "no_color": True,
     "js_runtimes": {"node": {}},
     "remote_components": ["ejs:github"],
@@ -45,7 +45,8 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            "player_client": ["ios", "android", "web", "mweb"],
+            "player_client": ["ios", "android", "web"],
+            "player_skip": ["mweb"],
         }
     },
     "lazy_playlist": True,
@@ -393,20 +394,20 @@ async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
     await asyncio.sleep(delay_seconds)
     loop = asyncio.get_running_loop()
     start = time.perf_counter()
-    await loop.run_in_executor(
-        _ydl_executor,
-        lambda: yt_dlp.YoutubeDL(build_ydl_options(YDL_OPTIONS_FAST))._ies,
-    )
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    logger.info("Music extractors warmed in %.0fms", elapsed_ms)
+    
+    def do_warmup():
+        opts = build_ydl_options(YDL_OPTIONS_FAST)
+        # Force download of remote components by running a search
+        opts['quiet'] = True
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # Just warming up the internal extractors and challenge solver
+            ydl._ies = ydl._ies 
+            if warmup_youtube:
+                try:
+                    ydl.extract_info("ytsearch1:youtube", download=False)
+                except Exception:
+                    pass
 
-    if warmup_youtube:
-        start = time.perf_counter()
-        await loop.run_in_executor(
-            _ydl_executor,
-            lambda: yt_dlp.YoutubeDL(build_ydl_options(YDL_OPTIONS_FAST)).extract_info(
-                "ytsearch1:youtube", download=False
-            ),
-        )
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        logger.info("Music YouTube warmup finished in %.0fms", elapsed_ms)
+    await loop.run_in_executor(_ydl_executor, do_warmup)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info("Music extractors warmed and challenge solvers ready in %.0fms", elapsed_ms)
