@@ -14,8 +14,9 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # In May 2026, gemini-3.5-flash is the latest stable release.
-        self.model_name = "gemini-3.5-flash"
+        # Primary and fallback models to increase total daily quota
+        self.primary_model = "gemini-3.5-flash"
+        self.fallback_model = "gemini-2.5-flash"
         
         # Simple LRU cache for responses
         self.cache: Dict[str, str] = OrderedDict()
@@ -34,11 +35,9 @@ class AIChat(commands.Cog):
                 ),
                 temperature=0.7,
                 max_output_tokens=4096,
-                tools=[self.lookup_wow_character],
-                # Limit function calls to save quota (20 requests/day is very low)
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(max_remote_calls=3)
+                tools=[self.lookup_wow_character]
             )
-            logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
+            logger.info("Gemini AI configured (Primary: %s, Fallback: %s)", self.primary_model, self.fallback_model)
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
@@ -100,7 +99,7 @@ class AIChat(commands.Cog):
             return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
     async def _call_gemini(self, prompt: str) -> str:
-        """Call the Gemini API using the new google-genai SDK."""
+        """Call the Gemini API with fallback logic."""
         # Check cache first
         cache_key = prompt.strip().lower()
         if cache_key in self.cache:
@@ -110,47 +109,55 @@ class AIChat(commands.Cog):
             self.cache[cache_key] = val
             return val
 
-        logger.debug("Prompting Gemini: %s", prompt)
-        try:
-            # Using the async client (aio)
-            response = await self.client.aio.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=self.config
-            )
-            
-            logger.debug("Gemini response received.")
-            
-            # Log the stop reason and safety ratings if available
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                logger.info("Gemini finish reason: %s", candidate.finish_reason)
-                if candidate.finish_reason == "SAFETY":
-                    logger.warning("Gemini response blocked by safety filters.")
-                    return "I'm sorry, I can't answer that due to safety guidelines."
-                if candidate.finish_reason == "MAX_TOKENS":
-                    logger.warning("Gemini response reached max output tokens.")
-
-            if not response.text:
-                logger.warning("Gemini returned an empty response or was blocked. Response object: %s", response)
-                return "I'm sorry, I couldn't generate a response."
-            
-            # Add to cache
-            self.cache[cache_key] = response.text
-            if len(self.cache) > self.cache_max_size:
-                self.cache.popitem(last=False)
+        # Try models in order
+        for model_name in [self.primary_model, self.fallback_model]:
+            logger.debug("Prompting %s: %s", model_name, prompt)
+            try:
+                # Using the async client (aio)
+                response = await self.client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=self.config
+                )
                 
-            return response.text
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-                # Try to find retry time in the error message
-                match = re.search(r"retry in ([\d.]+)s", err_msg)
-                retry_after = f"about {match.group(1)}s" if match else "a while"
-                raise APIError(f"Daily AI quota reached or rate limited. Please try again in {retry_after}.")
-            
-            logger.exception("Error calling Gemini API")
-            raise APIError(err_msg)
+                logger.debug("%s response received.", model_name)
+                
+                # Log the stop reason and safety ratings if available
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    logger.info("%s finish reason: %s", model_name, candidate.finish_reason)
+                    if candidate.finish_reason == "SAFETY":
+                        logger.warning("%s response blocked by safety filters.", model_name)
+                        return "I'm sorry, I can't answer that due to safety guidelines."
+                    if candidate.finish_reason == "MAX_TOKENS":
+                        logger.warning("%s response reached max output tokens.", model_name)
+
+                if not response.text:
+                    logger.warning("%s returned an empty response. Response object: %s", model_name, response)
+                    continue # Try next model
+                
+                # Add to cache
+                self.cache[cache_key] = response.text
+                if len(self.cache) > self.cache_max_size:
+                    self.cache.popitem(last=False)
+                    
+                return response.text
+
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                    logger.warning("%s quota exhausted. Error: %s", model_name, err_msg)
+                    if model_name == self.fallback_model:
+                        # If the fallback also fails, we're out of quota
+                        match = re.search(r"retry in ([\d.]+)s", err_msg)
+                        retry_after = f"about {match.group(1)}s" if match else "a while"
+                        raise APIError(f"All AI daily quotas reached. Please try again in {retry_after}.")
+                    continue # Try fallback model
+                
+                logger.exception("Error calling %s", model_name)
+                raise APIError(err_msg)
+        
+        return "I'm sorry, I couldn't generate a response."
 
     @commands.command(name="ask")
     @commands.cooldown(1, 10, commands.BucketType.user)
