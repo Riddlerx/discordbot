@@ -27,11 +27,13 @@ class AIChat(commands.Cog):
             self.config = types.GenerateContentConfig(
                 system_instruction=(
                     "You are a helpful and friendly AI assistant in a Discord server. "
-                    "Keep your responses concise and engaging. Use markdown formatting "
-                    "supported by Discord (bold, italic, code blocks, etc). "
-                    "Respond in the same language as the user's message. "
-                    "You have access to World of Warcraft character lookup tools. "
-                    "When asked about a WoW player, use these tools to get their real stats."
+                    "When asked about a World of Warcraft (WoW) character or player, "
+                    "you MUST use the 'lookup_wow_character' tool immediately. "
+                    "Do NOT tell the user you are going to search or ask for permission. "
+                    "Just use the tool, wait for the results, and then provide a final "
+                    "answer based on those results. Keep your responses concise and "
+                    "engaging. Use Discord markdown formatting. Respond in the same "
+                    "language as the user."
                 ),
                 temperature=0.7,
                 max_output_tokens=4096,
@@ -44,12 +46,13 @@ class AIChat(commands.Cog):
     async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
         Lookup a World of Warcraft character's stats, level, class, and progress.
-        If the realm is unknown, the tool will try to find the character on common OCE/US realms.
+        Use this tool whenever a user mentions a WoW character name or asks for stats.
         
         Args:
             name: The character's name.
             realm: The character's realm (server). Optional.
         """
+        logger.info("Tool Call: lookup_wow_character(name=%s, realm=%s)", name, realm)
         wow_cog = self.bot.get_cog("WoW")
         if not wow_cog:
             return "WoW lookup tool is currently unavailable."
