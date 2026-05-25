@@ -27,15 +27,15 @@ YDL_OPTIONS_FAST = {
     "quiet": True,
     "no_warnings": True,
     "no_color": True,
-    "js_runtimes": {"node": {"path": "node"}},
+    "js_runtimes": ["node"],
     "remote_components": "ejs:github",
     "force_ipv4": True,
     "retries": 5,
     "fragment_retries": 5,
     "concurrent_fragment_downloads": 5,
     "nocheckcertificate": True,
-    "youtube_include_dash_manifest": False,
-    "youtube_include_hls_manifest": False,
+    "youtube_include_dash_manifest": True,
+    "youtube_include_hls_manifest": True,
     "skip_download": False,
     "writethumbnail": False,
     "writesubtitles": False,
@@ -44,7 +44,12 @@ YDL_OPTIONS_FAST = {
     "cachedir": os.path.join(tempfile.gettempdir(), "yt_dlp_cache"),
     "user_agent": DEFAULT_USER_AGENT,
     "proxy": None,
-    "extractor_args": {},
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web", "ios"],
+            "skip": ["hls", "dash"] if False else [],  # Keep them enabled
+        }
+    },
     "lazy_playlist": True,
     "playlist_items": "1",
     "noprogress": True,
@@ -187,7 +192,7 @@ def build_ydl_options(base_options: dict) -> dict:
 
     js_runtime = os.getenv("YTDLP_JS_RUNTIME")
     if js_runtime:
-        options["js_runtimes"] = {js_runtime: {}}
+        options["js_runtimes"] = [js_runtime]
 
     remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
     if remote_components:
