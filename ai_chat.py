@@ -14,9 +14,12 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # Primary and fallback models to increase total daily quota
-        self.primary_model = "gemini-3.5-flash"
-        self.fallback_model = "gemini-2.5-flash"
+        # Use a list of models to maximize daily quota (Total: ~540 RPD)
+        self.models = [
+            "gemini-3.5-flash",      # 20 RPD
+            "gemini-2.5-flash",      # 20 RPD
+            "gemini-3.1-flash-lite"  # 500 RPD
+        ]
         
         # Simple LRU cache for responses
         self.cache: Dict[str, str] = OrderedDict()
@@ -39,7 +42,7 @@ class AIChat(commands.Cog):
                 max_output_tokens=4096,
                 tools=[self.lookup_wow_character]
             )
-            logger.info("Gemini AI configured (Primary: %s, Fallback: %s)", self.primary_model, self.fallback_model)
+            logger.info("Gemini AI configured with fallback chain: %s", ", ".join(self.models))
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
@@ -102,7 +105,7 @@ class AIChat(commands.Cog):
             return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
     async def _call_gemini(self, prompt: str) -> str:
-        """Call the Gemini API with fallback logic."""
+        """Call the Gemini API with fallback logic across multiple models."""
         # Check cache first
         cache_key = prompt.strip().lower()
         if cache_key in self.cache:
@@ -113,7 +116,7 @@ class AIChat(commands.Cog):
             return val
 
         # Try models in order
-        for model_name in [self.primary_model, self.fallback_model]:
+        for i, model_name in enumerate(self.models):
             logger.debug("Prompting %s: %s", model_name, prompt)
             try:
                 # Using the async client (aio)
@@ -150,12 +153,12 @@ class AIChat(commands.Cog):
                 err_msg = str(e)
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
                     logger.warning("%s quota exhausted. Error: %s", model_name, err_msg)
-                    if model_name == self.fallback_model:
-                        # If the fallback also fails, we're out of quota
+                    if i == len(self.models) - 1:
+                        # If the last fallback also fails, we're out of quota
                         match = re.search(r"retry in ([\d.]+)s", err_msg)
                         retry_after = f"about {match.group(1)}s" if match else "a while"
                         raise APIError(f"All AI daily quotas reached. Please try again in {retry_after}.")
-                    continue # Try fallback model
+                    continue # Try next model
                 
                 logger.exception("Error calling %s", model_name)
                 raise APIError(err_msg)
@@ -190,7 +193,10 @@ class AIChat(commands.Cog):
 
             except APIError as e:
                 logger.error("AI API error: %s", e)
-                await ctx.send(f"⚠️ {e}")
+                if "daily quotas reached" in str(e).lower():
+                    await ctx.send("🛑 **Daily chat limit reached!** The AI has run out of juice for today. Please try again tomorrow! 😴")
+                else:
+                    await ctx.send(f"⚠️ {e}")
             except Exception as e:
                 logger.exception("Unexpected error in AI chat")
                 await ctx.send("⚠️ Something went wrong. Please try again.")
