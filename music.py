@@ -29,6 +29,7 @@ AUTO_DISCONNECT_EMPTY_DELAY = int(os.getenv("AUTO_DISCONNECT_EMPTY_DELAY", "60")
 _STARTUP_WARMUP_YOUTUBE = os.getenv("MUSIC_WARMUP_YOUTUBE", "").strip().lower() in ("1", "true", "yes", "on")
 _STARTUP_WARMUP_DELAY = int(os.getenv("MUSIC_WARMUP_DELAY", "2"))
 _PREFETCH_DELAY_SECONDS = float(os.getenv("MUSIC_PREFETCH_DELAY", "2"))
+_CLEANUP_ON_START = os.getenv("MUSIC_CLEANUP_ON_START", "false").strip().lower() in ("1", "true", "yes", "on")
 
 # ── Views ───────────────────────────────────────────────────────────────────
 
@@ -125,7 +126,10 @@ class Music(commands.Cog):
         return self._states[guild_id]
 
     async def cog_load(self):
-        await asyncio.to_thread(cleanup_all)
+        if _CLEANUP_ON_START:
+            await asyncio.to_thread(cleanup_all)
+        else:
+            await asyncio.to_thread(cleanup_stale_audio_files, 7200)
         self._warmup_task = asyncio.create_task(self._warmup_extractors())
         self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
         self._voice_watchdog_task = asyncio.create_task(self._voice_watchdog())
@@ -810,10 +814,9 @@ class Music(commands.Cog):
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
         searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
+        voice_task = asyncio.create_task(self._ensure_voice(ctx))
         try:
             s_start = time.perf_counter()
-            voice_ok = await self._ensure_voice(ctx)
-            logger.info("Voice prepare guild=%s took %.2fs", ctx.guild.id, time.perf_counter() - s_start)
 
             # Check if it's a Spotify playlist/album for lazy loading
             playlist_tracks = None
@@ -848,7 +851,12 @@ class Music(commands.Cog):
                 info['_audio_path'] = audio_path
                 added_msg = f"\U0001f4cb Added to queue: **{info.get('title')}**"
 
+            voice_ok = await voice_task
+            logger.info("Voice prepare guild=%s took %.2fs", ctx.guild.id, time.perf_counter() - s_start)
+
         except Exception as e:
+            if not voice_task.done():
+                voice_task.cancel()
             if 'searching_msg' in locals():
                 await searching_msg.delete()
             logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
