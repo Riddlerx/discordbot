@@ -835,9 +835,11 @@ class Music(commands.Cog):
             else:
                 # Single track or normal search
                 s_dl = time.perf_counter()
-                info, audio_path = await search_and_download(query, download=False)
+                # On Cloud VM, direct streaming (download=False) often hits 403 Forbidden.
+                # Forcing download=True here for the first track ensures stability.
+                info, audio_path = await search_and_download(query, download=True)
                 elapsed = time.perf_counter() - s_dl
-                logger.info("Search+stream guild=%s took %.2fs", ctx.guild.id, elapsed)
+                logger.info("Search+download guild=%s took %.2fs", ctx.guild.id, elapsed)
 
                 info['original_url'] = query
                 info['_audio_path'] = audio_path

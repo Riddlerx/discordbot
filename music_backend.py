@@ -54,6 +54,8 @@ YDL_OPTIONS_FAST = {
     "noprogress": True,
     "no_part": True,
     "buffersize": 16384,
+    "sleep_interval": 0,
+    "max_sleep_interval": 0,
     "outtmpl": os.path.join(TEMP_DIR, "%(id)s.%(ext)s"),
 }
 
