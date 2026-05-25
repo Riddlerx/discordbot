@@ -50,11 +50,12 @@ class AIChat(commands.Cog):
     async def _generate_image(self, prompt: str) -> Optional[io.BytesIO]:
         """Generate an image using Imagen 3."""
         try:
-            # Using the async client (aio)
-            response = await self.client.aio.models.generate_image(
-                model="imagen-3",
+            # The correct method is generate_images (plural) and the model ID is often more specific
+            # imagen-3.0-generate-001 is a common stable ID in 2026
+            response = await self.client.aio.models.generate_images(
+                model="imagen-3.0-generate-001",
                 prompt=prompt,
-                config=types.GenerateImageConfig(
+                config=types.GenerateImagesConfig(
                     number_of_images=1,
                     include_rai_reasoning=True,
                     output_mime_type="image/jpeg"
@@ -62,8 +63,12 @@ class AIChat(commands.Cog):
             )
             
             if response.generated_images:
-                image_bytes = response.generated_images[0].image_bytes
-                return io.BytesIO(image_bytes)
+                # The image data is usually in the 'image' attribute as bytes
+                image_data = response.generated_images[0].image
+                if hasattr(image_data, 'image_bytes'):
+                    return io.BytesIO(image_data.image_bytes)
+                elif isinstance(image_data, bytes):
+                    return io.BytesIO(image_data)
             return None
         except Exception as e:
             logger.error("Error generating image: %s", e)
