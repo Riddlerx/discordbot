@@ -383,11 +383,12 @@ class Music(commands.Cog):
         if announce_channel and announce_text:
             await announce_channel.send(announce_text, view=view)
 
+        log_path = "<stream-url>" if audio_path.startswith("http") else audio_path
         logger.info(
             "Starting playback guild=%s track=%s path=%s seek=%ss volume=%.2f",
             guild.id,
             track_label(info),
-            audio_path,
+            log_path,
             seek_seconds,
             st.volume,
         )
@@ -634,24 +635,26 @@ class Music(commands.Cog):
         st.current_info = info
         title = info.get('title', 'Unknown')
 
-        # Use local file if available, otherwise download or get stream URL
+        # Use local file if available, otherwise resolve a stream/file for playback.
         audio_path = info.get('_audio_path')
         if not audio_path or (not audio_path.startswith("http") and not os.path.exists(audio_path)):
             try:
                 query = info.get('original_url') or info.get('webpage_url') or info.get('title')
-                # Try download first for reliability
                 try:
-                    info, audio_path = await search_and_download(query, download=True)
+                    info, audio_path = await search_and_download(query, download=not _FAST_START_STREAMING)
                 except Exception as e:
-                    logger.warning("Download failed for track, falling back to stream: %s", e)
-                    # Fallback to streaming if download fails
-                    info, audio_path = await search_and_download(query, download=False)
-                
+                    if not _FAST_START_STREAMING:
+                        logger.warning("Download failed for track, falling back to stream: %s", e)
+                        info, audio_path = await search_and_download(query, download=False)
+                    else:
+                        logger.warning("Fast-start stream failed for track, falling back to download: %s", e)
+                        info, audio_path = await search_and_download(query, download=True)
+
                 st.current_info = info
                 title = info.get('title', title)
             except Exception as e:
                 if text_channel:
-                    await text_channel.send(f"\u274c Could not load track: {e}")
+                    await text_channel.send(f"❌ Could not load track: {e}")
                 st.is_loading = False
                 self._advance(guild.id)
                 return
@@ -788,6 +791,7 @@ class Music(commands.Cog):
                     self._reset_playback_state(st)
 
         if next_info:
+            self._cancel_prefetch(st)
             guild = self.bot.get_guild(guild_id)
             if guild is not None:
                 await self._play_track_for_guild(
