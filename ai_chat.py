@@ -22,10 +22,12 @@ class AIChat(commands.Cog):
                     "You are a helpful and friendly AI assistant in a Discord server. "
                     "Keep your responses concise and engaging. Use markdown formatting "
                     "supported by Discord (bold, italic, code blocks, etc). "
-                    "Respond in the same language as the user's message."
+                    "Respond in the same language as the user's message. "
+                    "When asked about specific players or real-time data, use the search tool."
                 ),
                 temperature=0.7,
                 max_output_tokens=4096,
+                tools=[types.Tool(google_search=types.GoogleSearch())]
             )
             logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
         else:
