@@ -2,7 +2,8 @@ import os
 import logging
 import discord
 from discord.ext import commands
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger("discordbot.ai_chat")
 
@@ -10,27 +11,36 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
+        # In 2026, gemini-2.0-flash is likely the standard, but let's try 1.5-flash first 
+        # as requested, or fall back if needed.
         self.model_name = "gemini-1.5-flash"
         
         if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(
-                model_name=self.model_name,
+            self.client = genai.Client(api_key=self.api_key)
+            self.config = types.GenerateContentConfig(
                 system_instruction=(
                     "You are a helpful and friendly AI assistant in a Discord server. "
                     "Keep your responses concise and engaging. Use markdown formatting "
                     "supported by Discord (bold, italic, code blocks, etc). "
                     "Respond in the same language as the user's message."
-                )
+                ),
+                temperature=0.7,
+                max_output_tokens=1024,
             )
-            logger.info("Gemini AI configured (model: %s)", self.model_name)
+            logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
     async def _call_gemini(self, prompt: str) -> str:
-        """Call the Gemini API and return the response text."""
+        """Call the Gemini API using the new google-genai SDK."""
         try:
-            response = await self.model.generate_content_async(prompt)
+            # Using the async client (aio)
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=self.config
+            )
+            
             if not response.text:
                 logger.warning("Gemini returned an empty response.")
                 return "I'm sorry, I couldn't generate a response."
@@ -56,16 +66,15 @@ class AIChat(commands.Cog):
 
                 # Discord has a 2000 character limit per message
                 if len(text) > 2000:
-                    # Split into chunks instead of truncating
                     chunks = [text[i:i + 1990] for i in range(0, len(text), 1990)]
-                    for chunk in chunks[:3]:  # max 3 chunks to avoid spam
+                    for chunk in chunks[:3]:
                         await ctx.send(chunk)
                 else:
                     await ctx.send(text)
 
             except APIError as e:
                 logger.error("AI API error: %s", e)
-                await ctx.send("⚠️ The AI service returned an error. Please try again later.")
+                await ctx.send(f"⚠️ The AI service returned an error: `{e}`")
             except Exception as e:
                 logger.error("Unexpected error in AI chat: %s", e)
                 await ctx.send("⚠️ Something went wrong. Please try again.")
