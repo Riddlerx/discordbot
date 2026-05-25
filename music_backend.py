@@ -21,8 +21,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    # Prefer Opus (webm) then M4A for fastest download/quality ratio
-    "format": "ba[ext=webm]/ba[ext=m4a]/ba",
+    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
