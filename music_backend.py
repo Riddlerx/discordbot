@@ -12,7 +12,7 @@ import aiohttp
 import yt_dlp
 
 TEMP_DIR = os.path.join(tempfile.gettempdir(), "discord_music")
-
+DEFAULT_COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
 DEFAULT_USER_AGENT = os.getenv(
     "USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -157,7 +157,21 @@ async def extract_spotify_metadata(url: str) -> list[str] | str | None:
 
 
 def get_yt_dlp_auth_config() -> dict:
-    return {}
+    cookies_path = os.getenv("YTDLP_COOKIES") or os.getenv("YOUTUBE_COOKIES_PATH")
+    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
+    auth_options: dict = {}
+
+    if cookies_from_browser:
+        auth_options["cookiesfrombrowser"] = (cookies_from_browser,)
+    elif cookies_path:
+        if os.path.exists(cookies_path):
+            auth_options["cookiefile"] = cookies_path
+        else:
+            logger.warning("Configured yt-dlp cookie file does not exist: %s", cookies_path)
+    elif os.path.exists(DEFAULT_COOKIE_FILE):
+        auth_options["cookiefile"] = DEFAULT_COOKIE_FILE
+
+    return auth_options
 
 
 def build_ydl_options(base_options: dict) -> dict:
@@ -179,7 +193,10 @@ def build_ydl_options(base_options: dict) -> dict:
     if remote_components:
         options["remote_components"] = remote_components
 
-
+    if auth_cfg.get("cookiefile"):
+        logger.info("Using yt-dlp cookies from %s", auth_cfg["cookiefile"])
+    elif auth_cfg.get("cookiesfrombrowser"):
+        logger.info("Using yt-dlp cookies from browser profile: %s", auth_cfg["cookiesfrombrowser"][0])
 
     return options
 
@@ -344,7 +361,23 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 _inflight_queries.pop(inflight_key, None)
 
 
+def parse_cookies_for_ffmpeg(cookiefile: str) -> str:
+    if not cookiefile or not os.path.exists(cookiefile):
+        return ""
 
+    cookies = []
+    try:
+        with open(cookiefile, "r") as f:
+            for line in f:
+                if not line.strip() or line.startswith("#"):
+                    continue
+                parts = line.split("	")
+                if len(parts) >= 7:
+                    cookies.append(f"{parts[5]}={parts[6].strip()}")
+        return "; ".join(cookies)
+    except Exception as exc:
+        logger.warning("Failed to parse cookies for FFmpeg: %s", exc)
+        return ""
 
 
 async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
