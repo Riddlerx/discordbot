@@ -28,7 +28,7 @@ YDL_OPTIONS_FAST = {
     "no_warnings": False,
     "no_color": True,
     "js_runtimes": {"node": {}},
-    "remote_components": "ejs:github",
+    "remote_components": ["ejs:github"],
     "retries": 5,
     "fragment_retries": 5,
     "concurrent_fragment_downloads": 5,
@@ -200,7 +200,7 @@ def build_ydl_options(base_options: dict) -> dict:
 
     remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS")
     if remote_components:
-        options["remote_components"] = remote_components
+        options["remote_components"] = [remote_components]
 
     if auth_cfg.get("cookiefile"):
         logger.info("Using yt-dlp cookies from %s", auth_cfg["cookiefile"])
