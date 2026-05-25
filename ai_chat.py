@@ -23,15 +23,56 @@ class AIChat(commands.Cog):
                     "Keep your responses concise and engaging. Use markdown formatting "
                     "supported by Discord (bold, italic, code blocks, etc). "
                     "Respond in the same language as the user's message. "
-                    "When asked about specific players or real-time data, use the search tool."
+                    "You have access to World of Warcraft character lookup tools. "
+                    "When asked about a WoW player, use these tools to get their real stats."
                 ),
                 temperature=0.7,
                 max_output_tokens=4096,
-                tools=[types.Tool(google_search=types.GoogleSearch())]
+                tools=[self.lookup_wow_character]
             )
             logger.info("Gemini AI configured with google-genai (model: %s)", self.model_name)
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
+
+    async def lookup_wow_character(self, name: str, realm: str = "nagrand") -> str:
+        """
+        Lookup a World of Warcraft character's stats, level, class, and progress.
+        
+        Args:
+            name: The character's name.
+            realm: The character's realm (server). Defaults to 'nagrand'.
+        """
+        wow_cog = self.bot.get_cog("WoW")
+        if not wow_cog:
+            return "WoW lookup tool is currently unavailable."
+
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            try:
+                profile = await wow_cog.get_character_profile(session, name, realm)
+                if not profile:
+                    return f"Character {name} on {realm} not found."
+
+                keys, raid, score = await wow_cog.get_vault_data(session, name, realm)
+                
+                char_class = profile.get("character_class", {}).get("name", "Unknown")
+                level = profile.get("level", 0)
+                ilvl = profile.get("equipped_item_level", 0)
+                guild = profile.get("guild", {}).get("name", "No Guild")
+                
+                return (
+                    f"Name: {profile['name']}\n"
+                    f"Realm: {profile['realm']['name']}\n"
+                    f"Level: {level}\n"
+                    f"Class: {char_class}\n"
+                    f"Item Level: {ilvl}\n"
+                    f"Guild: {guild}\n"
+                    f"M+ Score: {score}\n"
+                    f"Weekly Vault: Keys({keys[0]}/{keys[1]}/{keys[2]}), Raid({'/'.join(raid)})"
+                )
+            except Exception as e:
+                logger.error("Error in AI WoW lookup: %s", e)
+                return f"Error looking up character: {str(e)}"
 
     async def _call_gemini(self, prompt: str) -> str:
         """Call the Gemini API using the new google-genai SDK."""
