@@ -12,7 +12,7 @@ class AIChat(commands.Cog):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.client = None
-        self.model_name = 'gemini-1.5-flash'
+        self.model_name = 'gemini-2.0-flash'
         
         if self.api_key:
             try:
