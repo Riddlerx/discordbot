@@ -18,6 +18,7 @@ from music_backend import (
     extract_spotify_metadata,
     get_yt_dlp_auth_config,
     parse_cookies_for_ffmpeg,
+    resolve_track_info,
     search_and_download,
     track_label,
     warmup_extractors,
@@ -878,11 +879,18 @@ class Music(commands.Cog):
                     })
                 await ctx.send(f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify.")
             else:
-                st.queue.append({
-                    'title': query,
-                    'original_url': query,
-                })
-                await ctx.send(f"\U0001f4cb Added to queue (#{len(st.queue)}): **{query}**")
+                try:
+                    queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
+                    queued_info['original_url'] = query
+                except Exception as exc:
+                    logger.warning("Queue metadata resolve failed guild=%s query=%r: %s", ctx.guild.id, query, exc)
+                    queued_info = {
+                        'title': query,
+                        'original_url': query,
+                    }
+
+                st.queue.append(queued_info)
+                await ctx.send(f"📋 Added to queue (#{len(st.queue)}): **{queued_info.get('title', query)}**")
             if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
                 self._schedule_prefetch(ctx)
             return

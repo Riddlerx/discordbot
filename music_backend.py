@@ -447,6 +447,12 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 _inflight_queries.pop(inflight_key, None)
 
 
+
+async def resolve_track_info(query: str) -> dict:
+    """Resolve a user query to playable metadata without downloading audio."""
+    info, _ = await search_and_download(query, download=False)
+    return info
+
 def parse_cookies_for_ffmpeg(cookiefile: str) -> str:
     if not cookiefile or not os.path.exists(cookiefile):
         return ""
