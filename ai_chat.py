@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import io
+import asyncio
 from typing import Optional, Dict
 from collections import OrderedDict
 import discord
@@ -15,11 +16,11 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # Use a list of models to maximize daily quota (Total: ~540 RPD)
+        # Use a list of models to maximize daily quota
         self.models = [
-            "gemini-3.5-flash",      # 20 RPD
-            "gemini-2.5-flash",      # 20 RPD
-            "gemini-3.1-flash-lite"  # 500 RPD
+            "gemini-3.5-flash",      # Latest
+            "gemini-3.1-flash-lite", # High quota
+            "gemini-2.0-flash"       # Reliable fallback
         ]
         
         # Simple LRU cache for responses
@@ -165,6 +166,103 @@ class AIChat(commands.Cog):
                 raise APIError(err_msg)
         
         return "I'm sorry, I couldn't generate a response."
+
+    async def _expand_prompt(self, user_prompt: str) -> str:
+        """Use Gemini to expand a simple prompt into a highly descriptive image generation prompt."""
+        if not self.api_key:
+            return user_prompt
+
+        system_instruction = (
+            "You are an expert AI image generation prompt engineer. "
+            "Expand the user's simple search query or prompt into a highly detailed, descriptive, visually stunning English prompt "
+            "suitable for generating high-quality art using Flux or Stable Diffusion. "
+            "Describe the characters, their key visual elements, features, clothing, poses, expressions, "
+            "the setting/background, lighting, style (e.g. detailed anime key visual, digital art, cinematic 3D render), and colors. "
+            "Keep the description concise but rich in visual detail (maximum 2-3 sentences). "
+            "Return ONLY the expanded prompt text. Do not include any intro, explanation, quotes, or markdown formatting."
+        )
+        try:
+            # Try models in order
+            for model_name in self.models:
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model_name,
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.7,
+                            max_output_tokens=150
+                        )
+                    )
+                    if response.text:
+                        expanded = response.text.strip()
+                        logger.info("Expanded prompt: %s -> %s", user_prompt, expanded)
+                        return expanded
+                except Exception as e:
+                    logger.warning("Failed to expand prompt with %s: %s", model_name, e)
+                    continue
+        except Exception as e:
+            logger.exception("Failed to expand prompt using Gemini")
+        
+        return user_prompt
+
+    @commands.command(name="draw")
+    @commands.cooldown(1, 15, commands.BucketType.user)
+    async def draw(self, ctx, *, prompt: str = None):
+        """Generate an image from a text prompt using AI."""
+        if not prompt:
+            await ctx.send("⚠️ Please provide a prompt. Example: `!draw A cybernetic dragon.`")
+            return
+
+        logger.info("Processing !draw from %s: %s", ctx.author, prompt)
+        async with ctx.typing():
+            try:
+                import aiohttp
+                from urllib.parse import quote
+
+                # Expand simple prompts with Gemini to get detailed anime/character descriptions
+                expanded_prompt = await self._expand_prompt(prompt)
+
+                encoded_prompt = quote(expanded_prompt)
+                url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&model=turbo"
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=90)) as resp:
+                        if resp.status != 200:
+                            logger.error("Pollinations returned status %d", resp.status)
+                            await ctx.send("⚠️ Image generation failed. Please try again.")
+                            return
+
+                        image_bytes = await resp.read()
+
+                file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
+                
+                description = f"**Prompt:** {prompt}"
+                if expanded_prompt != prompt:
+                    # Show the expanded version so the user sees the details Gemini added
+                    description += f"\n\n*AI interpretation: {expanded_prompt[:150]}...*"
+
+                embed = discord.Embed(
+                    title="🎨 AI Generated Image",
+                    description=description,
+                    color=discord.Color.purple()
+                )
+                embed.set_image(url="attachment://generated_image.png")
+                embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+                await ctx.send(embed=embed, file=file)
+
+            except asyncio.TimeoutError:
+                await ctx.send("⏳ Image generation timed out. Please try again with a simpler prompt.")
+            except Exception as e:
+                logger.exception("Error in !draw image generation")
+                await ctx.send("⚠️ Something went wrong generating the image. Please try again.")
+
+    @draw.error
+    async def draw_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before drawing again.", delete_after=5)
+        else:
+            self.bot.dispatch("command_error", ctx, error)
 
     @commands.command(name="ask")
     @commands.cooldown(1, 10, commands.BucketType.user)
