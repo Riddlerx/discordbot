@@ -160,7 +160,7 @@ async def on_command_error(ctx, error):
         await ctx.send(message)
         return
 
-    if isinstance(original, (commands.BadArgument, commands.BadLiteral, commands.UserInputError)):
+    if isinstance(original, (commands.BadArgument, commands.UserInputError)):
         message = "⚠️ Invalid command arguments."
         if usage:
             message = f"{message} Usage: `{usage}`"
