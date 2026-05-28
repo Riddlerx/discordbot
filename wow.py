@@ -59,13 +59,19 @@ class WoW(commands.Cog):
         self.blizzard_semaphore = asyncio.Semaphore(10)
         self.auto_update_task: Optional[asyncio.Task] = None
         self.state_lock = asyncio.Lock()
+        self._token_lock = asyncio.Lock()  # prevents concurrent token refresh races
+        self._session: Optional[aiohttp.ClientSession] = None  # shared session, created in cog_load
 
     async def cog_load(self):
+        # Shared session avoids per-command TCP handshakes and DNS lookups
+        self._session = aiohttp.ClientSession()
         await self.load_state()
 
-    def cog_unload(self):
+    async def cog_unload(self):
         if self.auto_update_task:
             self.auto_update_task.cancel()
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     def _read_state_file(self) -> dict:
         with open(STATE_FILE, "r") as f:
@@ -119,21 +125,23 @@ class WoW(commands.Cog):
         return None
 
     async def get_access_token(self, session: aiohttp.ClientSession) -> Optional[str]:
-        now = time.time()
-        if self.blizzard_token and now < self.blizzard_token_expiry:
-            return self.blizzard_token
-        url = "https://oauth.battle.net/token"
-        auth = aiohttp.BasicAuth(self.blizzard_client_id, self.blizzard_client_secret)
-        try:
-            async with session.post(url, data={"grant_type": "client_credentials"}, auth=auth) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    self.blizzard_token = data.get("access_token")
-                    self.blizzard_token_expiry = now + data.get("expires_in", 3600) - 60
-                    return self.blizzard_token
-        except Exception as e:
-            logger.error(f"Failed to get token: {e}")
-        return None
+        # Lock prevents two concurrent commands both refreshing an expired token
+        async with self._token_lock:
+            now = time.time()
+            if self.blizzard_token and now < self.blizzard_token_expiry:
+                return self.blizzard_token
+            url = "https://oauth.battle.net/token"
+            auth = aiohttp.BasicAuth(self.blizzard_client_id, self.blizzard_client_secret)
+            try:
+                async with session.post(url, data={"grant_type": "client_credentials"}, auth=auth) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.blizzard_token = data.get("access_token")
+                        self.blizzard_token_expiry = now + data.get("expires_in", 3600) - 60
+                        return self.blizzard_token
+            except Exception as e:
+                logger.error(f"Failed to get token: {e}")
+            return None
 
     async def get_item_icon(self, session: aiohttp.ClientSession, item_id: int) -> Optional[str]:
         token = await self.get_access_token(session)
@@ -261,10 +269,10 @@ class WoW(commands.Cog):
                 parts = search.rsplit(":", 1)
                 item_name, realm = parts[0].strip(), parts[1].strip()
 
-            async with aiohttp.ClientSession() as session:
-                item_results = await self.search_items(session, item_name)
-                if not item_results:
-                    return await ctx.send(f"❌ Item **{item_name}** not found.")
+            session = self._session
+            item_results = await self.search_items(session, item_name)
+            if not item_results:
+                return await ctx.send(f"❌ Item **{item_name}** not found.")
 
             name_groups: Dict[str, list] = {}
             for item in item_results:
@@ -275,14 +283,12 @@ class WoW(commands.Cog):
             async def on_name_selected(interaction: discord.Interaction, index: int):
                 selected_name = unique_names[index]
                 variants = name_groups[selected_name]
-                async with aiohttp.ClientSession() as new_session:
-                    await self.display_item_price(interaction, variants, realm, new_session)
+                await self.display_item_price(interaction, variants, realm, session)
 
             if len(unique_names) > 1:
                 exact_match = next((n for n in unique_names if n.lower() == item_name.lower()), None)
                 if exact_match:
-                    async with aiohttp.ClientSession() as new_session:
-                        return await self.display_item_price(ctx, name_groups[exact_match], realm, new_session)
+                    return await self.display_item_price(ctx, name_groups[exact_match], realm, session)
 
                 embed = discord.Embed(
                     title="💰 Multiple matches found",
@@ -292,8 +298,7 @@ class WoW(commands.Cog):
                 display_items = [{"name": n} for n in unique_names[:5]]
                 return await ctx.send(embed=embed, view=ItemSelectionView(display_items, on_name_selected))
 
-            async with aiohttp.ClientSession() as new_session:
-                await self.display_item_price(ctx, name_groups[unique_names[0]], realm, new_session)
+            await self.display_item_price(ctx, name_groups[unique_names[0]], realm, session)
 
     async def get_commodities_cached(self, session: aiohttp.ClientSession) -> Dict:
         now = time.time()
@@ -670,48 +675,48 @@ class WoW(commands.Cog):
     async def guildvault(self, ctx):
         async with ctx.typing():
             try:
-                async with aiohttp.ClientSession() as session:
-                    content = await self.build_guild_vault_text(session)
-                    
-                    # If it fits in one message, just send it
-                    if len(content) <= 2000:
-                        message = await ctx.send(content)
-                        self.guild_vault_message_id = message.id
-                        self.last_content = content
-                        await self.save_state()
-                        return
+                session = self._session
+                content = await self.build_guild_vault_text(session)
 
-                    # Otherwise, paginate (though build_guild_vault_text now truncates to fit)
-                    lines = content.split('\n')
-                    
-                    # Extract the footer (assume lines starting with 💰 or Last Updated:)
-                    footer_lines = [line for line in lines if line.startswith("💰") or line.startswith("Last Updated:")]
-                    body_lines = [line for line in lines if not (line.startswith("💰") or line.startswith("Last Updated:"))]
-                    footer = "\n".join(footer_lines)
-                    
-                    parts = []
-                    current_part = ""
-                    for line in body_lines:
-                        if len(current_part) + len(line) + 1 > 1900:
-                            parts.append(current_part)
-                            current_part = line
-                        else:
-                            current_part += ("\n" if current_part else "") + line
-                    
-                    # Add remaining body and footer
-                    if current_part:
+                # If it fits in one message, just send it
+                if len(content) <= 2000:
+                    message = await ctx.send(content)
+                    self.guild_vault_message_id = message.id
+                    self.last_content = content
+                    await self.save_state()
+                    return
+
+                # Otherwise, paginate (though build_guild_vault_text now truncates to fit)
+                lines = content.split('\n')
+
+                # Extract the footer (assume lines starting with 💰 or Last Updated:)
+                footer_lines = [line for line in lines if line.startswith("💰") or line.startswith("Last Updated:")]
+                body_lines = [line for line in lines if not (line.startswith("💰") or line.startswith("Last Updated:"))]
+                footer = "\n".join(footer_lines)
+
+                parts = []
+                current_part = ""
+                for line in body_lines:
+                    if len(current_part) + len(line) + 1 > 1900:
                         parts.append(current_part)
-                    
-                    # Append footer to the last part
-                    if footer:
-                        if parts:
-                            parts[-1] += "\n\n" + footer
-                        else:
-                            parts.append(footer)
-                            
-                    for part in parts:
-                        await ctx.send(part)
-                        
+                        current_part = line
+                    else:
+                        current_part += ("\n" if current_part else "") + line
+
+                # Add remaining body and footer
+                if current_part:
+                    parts.append(current_part)
+
+                # Append footer to the last part
+                if footer:
+                    if parts:
+                        parts[-1] += "\n\n" + footer
+                    else:
+                        parts.append(footer)
+
+                for part in parts:
+                    await ctx.send(part)
+
             except Exception as e:
                 logger.error(f"Error in guildvault command: {e}")
                 await ctx.send(f"⚠️ An error occurred: {e}")
@@ -729,12 +734,16 @@ class WoW(commands.Cog):
         url = f"https://us.api.blizzard.com/profile/wow/character/{realm}/{urllib.parse.quote(name.lower())}/character-media"
         headers = {"Authorization": f"Bearer {token}"}
         data = await self.safe_get(session, url, headers=headers, params={"namespace": "profile-us", "locale": "en_US"})
-        if data and data.get("assets"):
-            for asset in data["assets"]:
-                if asset.get("key") == "main-raw": return asset.get("value")
-                if asset.get("key") == "avatar": avatar = asset.get("value")
-            return avatar if 'avatar' in locals() else None
-        return None
+        if not data or not data.get("assets"):
+            return None
+        avatar: Optional[str] = None
+        for asset in data["assets"]:
+            key = asset.get("key")
+            if key == "main-raw":
+                return asset.get("value")   # best quality, return immediately
+            if key == "avatar":
+                avatar = asset.get("value")  # keep as fallback
+        return avatar  # None if neither asset type was found
 
     @commands.command(aliases=['char', 'whois'])
     async def lookup(self, ctx, *, query: str):
@@ -745,39 +754,39 @@ class WoW(commands.Cog):
                 parts = query.rsplit("-", 1)
                 name, realm = parts[0].strip(), parts[1].strip().lower().replace(" ", "").replace("'", "")
 
-            async with aiohttp.ClientSession() as session:
-                profile = await self.get_character_profile(session, name, realm)
-                if not profile:
-                    return await ctx.send(f"❌ Character **{name}** on **{realm}** not found.")
+            session = self._session
+            profile = await self.get_character_profile(session, name, realm)
+            if not profile:
+                return await ctx.send(f"❌ Character **{name}** on **{realm}** not found.")
 
-                keys, raid, score = await self.get_vault_data(session, name, realm)
-                media_url = await self.get_character_media(session, name, realm)
+            keys, raid, score = await self.get_vault_data(session, name, realm)
+            media_url = await self.get_character_media(session, name, realm)
 
-                char_class = profile.get("character_class", {}).get("name", "Unknown")
-                race = profile.get("race", {}).get("name", "Unknown")
-                level = profile.get("level", 0)
-                ilvl = profile.get("equipped_item_level", 0)
-                guild = profile.get("guild", {}).get("name", "No Guild")
-                faction = profile.get("faction", {}).get("name", "Neutral")
+            char_class = profile.get("character_class", {}).get("name", "Unknown")
+            race = profile.get("race", {}).get("name", "Unknown")
+            level = profile.get("level", 0)
+            ilvl = profile.get("equipped_item_level", 0)
+            guild = profile.get("guild", {}).get("name", "No Guild")
+            faction = profile.get("faction", {}).get("name", "Neutral")
 
-                color = discord.Color.blue()
-                if faction == "Horde": color = discord.Color.red()
-                elif faction == "Alliance": color = discord.Color.blue()
+            color = discord.Color.blue()
+            if faction == "Horde": color = discord.Color.red()
+            elif faction == "Alliance": color = discord.Color.blue()
 
-                embed = discord.Embed(
-                    title=f"{profile['name']} - {profile['realm']['name']}",
-                    description=f"{level} {race} {char_class} | <{guild}>",
-                    color=color,
-                    url=f"https://raider.io/characters/us/{realm}/{urllib.parse.quote(name)}"
-                )
+            embed = discord.Embed(
+                title=f"{profile['name']} - {profile['realm']['name']}",
+                description=f"{level} {race} {char_class} | <{guild}>",
+                color=color,
+                url=f"https://raider.io/characters/us/{realm}/{urllib.parse.quote(name)}"
+            )
 
-                if media_url:
-                    embed.set_thumbnail(url=media_url)
+            if media_url:
+                embed.set_thumbnail(url=media_url)
 
-                embed.add_field(name="Stats", value=f"**ilvl:** {ilvl}\n**M+ Score:** {score}", inline=True)
-                embed.add_field(name="Weekly Vault", value=f"**Keys:** {keys[0]}/{keys[1]}/{keys[2]}\n**Raid:** {'/'.join(raid)}", inline=True)
-                
-                await ctx.send(embed=embed)
+            embed.add_field(name="Stats", value=f"**ilvl:** {ilvl}\n**M+ Score:** {score}", inline=True)
+            embed.add_field(name="Weekly Vault", value=f"**Keys:** {keys[0]}/{keys[1]}/{keys[2]}\n**Raid:** {'/'.join(raid)}", inline=True)
+            
+            await ctx.send(embed=embed)
 
 
 async def setup(bot):

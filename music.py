@@ -288,51 +288,67 @@ class Music(commands.Cog):
                 return False
 
     def _create_audio_source(self, guild_id: int, audio_path: str, volume: float, *, seek_seconds: int = 0):
-        # Optimized for local files and streaming (more stable on AWS)
+        # Tuned for high-latency cross-Pacific connections (GCP US → Asia Discord)
         st = self.state(guild_id)
         is_url = audio_path.startswith("http")
-        
-        # Base FFmpeg options as a list to avoid shell quoting issues
-        before_options = ["-nostdin"]
+
+        # Base FFmpeg input options
+        before_options = [
+            "-nostdin",
+            # Increase probe size & analysis duration so FFmpeg doesn't stall
+            # on stream detection — speeds up playback start on high-RTT links
+            "-probesize", "32768",
+            "-analyzeduration", "0",
+        ]
+
         if is_url:
             before_options.extend([
-                "-thread_queue_size", "8192",
+                "-thread_queue_size", "16384",
                 "-reconnect", "1",
                 "-reconnect_at_eof", "1",
                 "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "10"
+                "-reconnect_delay_max", "10",
+                # 32MB network read buffer to absorb cross-Pacific RTT spikes
+                # without starving the audio pipeline
+                "-buffer_size", "33554432",
             ])
-            # Use headers for cookies and user-agent
             auth_cfg = get_yt_dlp_auth_config()
             cookiefile = auth_cfg.get("cookiefile")
             user_agent = os.getenv("USER_AGENT") or DEFAULT_USER_AGENT
-            
+
             headers = [
                 f"User-Agent: {user_agent}",
                 "Referer: https://www.youtube.com/",
-                "Origin: https://www.youtube.com"
+                "Origin: https://www.youtube.com",
             ]
-            
             cookie_str = parse_cookies_for_ffmpeg(cookiefile)
             if cookie_str:
                 headers.append(f"Cookie: {cookie_str}")
-            
-            if headers:
-                # FFmpeg expects headers separated by \r\n and ending with \r\n
-                header_str = "\r\n".join(headers) + "\r\n"
-                before_options.extend(["-headers", header_str])
-        else:
-            # -re is crucial for local files to prevent 'fast start' glitches
-            before_options.extend(["-re"])
+
+            header_str = "\r\n".join(headers) + "\r\n"
+            before_options.extend(["-headers", header_str])
+
+        # Note: -re is intentionally NOT used for local files.
+        # On high-latency links (cross-Pacific GCP → Asia Discord), -re reads at
+        # "real-time rate" which causes buffer starvation and audible stutter.
+        # FFmpeg paces output naturally through the Opus encoder timing.
 
         if seek_seconds > 0:
             before_options.extend(["-ss", str(seek_seconds)])
 
-        ffmpeg_options = f"-vn -loglevel warning -af volume={volume}"
+        # Output options:
+        # -vn           : discard video, audio only
+        # -loglevel     : suppress verbose FFmpeg output
+        # For local opus/webm files with no seek/volume change, copy the
+        # stream directly — zero CPU re-encoding, minimal latency on e2-micro
+        is_opus_file = not is_url and audio_path.endswith((".webm", ".opus"))
+        if is_opus_file and seek_seconds == 0 and volume == 1.0:
+            ffmpeg_options = "-vn -loglevel warning -c:a copy"
+        else:
+            ffmpeg_options = f"-vn -loglevel warning -af volume={volume}"
 
         logger.debug("Creating audio source path=%s before_options=%r", audio_path, before_options)
 
-        # Convert list to a properly quoted string for FFmpeg
         before_options_str = (
             " ".join(shlex.quote(arg) for arg in before_options)
             if isinstance(before_options, list)
@@ -344,7 +360,9 @@ class Music(commands.Cog):
                 audio_path,
                 before_options=before_options_str,
                 options=ffmpeg_options,
-                bitrate=128
+                # 96kbps: perceptually transparent for Discord voice, uses half
+                # the uplink bandwidth of 128kbps — important on GCP free tier
+                bitrate=96,
             )
         except Exception as exc:
             logger.warning("FFmpegOpusAudio failed for path=%s; falling back to PCMAudio: %s", audio_path, exc)
@@ -532,6 +550,8 @@ class Music(commands.Cog):
 
             await asyncio.sleep(AUTO_DISCONNECT_EMPTY_DELAY)
 
+            # Re-fetch everything after the wait — the bot may have moved channels
+            # or new users may have joined during AUTO_DISCONNECT_EMPTY_DELAY
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 return
@@ -1179,6 +1199,7 @@ class Music(commands.Cog):
                     )
                 )
             return
+
         if not AUTO_DISCONNECT_WHEN_EMPTY:
             return
         vc = member.guild.voice_client
@@ -1188,6 +1209,17 @@ class Music(commands.Cog):
         before_id = getattr(before.channel, "id", None)
         after_id = getattr(after.channel, "id", None)
         if before_id != current_channel_id and after_id != current_channel_id:
+            return
+
+        # Give Discord's gateway cache a moment to settle before we count
+        # users. Without this, a member moving between voice channels briefly
+        # appears as "left" and falsely triggers the empty-channel timer.
+        await asyncio.sleep(1.5)
+
+        # Re-fetch the voice client after the settle delay — the bot may have
+        # moved or disconnected legitimately in the meantime.
+        vc = member.guild.voice_client
+        if not vc or not vc.is_connected():
             return
 
         st = self.state(member.guild.id)
@@ -1200,6 +1232,7 @@ class Music(commands.Cog):
                 non_bot_ids,
                 member.id,
             )
+            # Someone is here — cancel any pending empty-disconnect timer
             self._cancel_empty_disconnect(st)
             return
 

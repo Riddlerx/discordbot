@@ -21,7 +21,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    "format": "bestaudio/best",
+    # Prefer opus in a webm container — no re-encoding needed by FFmpeg, lowest CPU
+    "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
@@ -29,9 +30,11 @@ YDL_OPTIONS_FAST = {
     "no_color": True,
     "js_runtimes": {"node": {}},
     "remote_components": ["ejs:github"],
-    "retries": 5,
-    "fragment_retries": 10,
-    "concurrent_fragment_downloads": 10,
+    # More retries for high-latency / flaky connections
+    "retries": 10,
+    "fragment_retries": 15,
+    # Download fragments in parallel — critical on high-latency links to hide RTT
+    "concurrent_fragment_downloads": 5,
     "nocheckcertificate": True,
     "youtube_include_dash_manifest": True,
     "youtube_include_hls_manifest": True,
@@ -45,6 +48,7 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
+            # ios is the most reliable client for audio-only extraction
             "player_client": ["ios", "android", "web"],
             "player_skip": ["mweb"],
         }
@@ -53,14 +57,18 @@ YDL_OPTIONS_FAST = {
     "playlist_items": "1",
     "noprogress": True,
     "no_part": True,
-    "buffersize": 16384,
+    # 256KB buffer — critical for high-latency (cross-Pacific) connections
+    # The default 16KB causes FFmpeg buffer starvation and audible stuttering
+    "buffersize": 262144,
     "sleep_interval": 0,
     "max_sleep_interval": 0,
     "outtmpl": os.path.join(TEMP_DIR, "%(id)s.%(ext)s"),
 }
 
-_ydl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yt-dlp")
-_extract_semaphore = asyncio.Semaphore(1)
+# 3 workers so multiple songs can be queued/prefetched without blocking each other
+_ydl_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="yt-dlp")
+# Allow 2 concurrent extractions (e.g. current + prefetch running in parallel)
+_extract_semaphore = asyncio.Semaphore(2)
 _info_cache: dict[str, tuple[float, dict]] = {}
 _info_cache_lock = asyncio.Lock()
 _inflight_queries: dict[str, asyncio.Future] = {}

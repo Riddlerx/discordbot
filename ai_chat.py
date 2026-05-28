@@ -59,6 +59,15 @@ class AIChat(commands.Cog):
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
+        self._session: Optional[aiohttp.ClientSession] = None  # shared HTTP session
+
+    async def cog_load(self):
+        self._session = aiohttp.ClientSession()
+
+    async def cog_unload(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
     async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
         Lookup a World of Warcraft character's stats, level, class, and progress.
@@ -86,36 +95,36 @@ class AIChat(commands.Cog):
         else:
             realms_to_try = common_realms
 
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            for r in realms_to_try:
-                try:
-                    profile = await wow_cog.get_character_profile(session, name, r)
-                    if not profile:
-                        continue
-
-                    keys, raid, score = await wow_cog.get_vault_data(session, name, r)
-                    
-                    char_class = profile.get("character_class", {}).get("name", "Unknown")
-                    level = profile.get("level", 0)
-                    ilvl = profile.get("equipped_item_level", 0)
-                    guild = profile.get("guild", {}).get("name", "No Guild")
-                    
-                    return (
-                        f"Found on Realm: {profile['realm']['name']}\n"
-                        f"Name: {profile['name']}\n"
-                        f"Level: {level}\n"
-                        f"Class: {char_class}\n"
-                        f"Item Level: {ilvl}\n"
-                        f"Guild: {guild}\n"
-                        f"M+ Score: {score}\n"
-                        f"Weekly Vault: Keys({keys[0]}/{keys[1]}/{keys[2]}), Raid({'/'.join(raid)})"
-                    )
-                except Exception as e:
-                    logger.warning("Error looking up %s on %s: %s", name, r, e)
+        # Reuse the shared session instead of creating a new one per tool call
+        session = self._session
+        for r in realms_to_try:
+            try:
+                profile = await wow_cog.get_character_profile(session, name, r)
+                if not profile:
                     continue
-            
-            return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
+
+                keys, raid, score = await wow_cog.get_vault_data(session, name, r)
+                
+                char_class = profile.get("character_class", {}).get("name", "Unknown")
+                level = profile.get("level", 0)
+                ilvl = profile.get("equipped_item_level", 0)
+                guild = profile.get("guild", {}).get("name", "No Guild")
+                
+                return (
+                    f"Found on Realm: {profile['realm']['name']}\n"
+                    f"Name: {profile['name']}\n"
+                    f"Level: {level}\n"
+                    f"Class: {char_class}\n"
+                    f"Item Level: {ilvl}\n"
+                    f"Guild: {guild}\n"
+                    f"M+ Score: {score}\n"
+                    f"Weekly Vault: Keys({keys[0]}/{keys[1]}/{keys[2]}), Raid({'/'.join(raid)})"
+                )
+            except Exception as e:
+                logger.warning("Error looking up %s on %s: %s", name, r, e)
+                continue
+        
+        return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
     async def _call_gemini(self, prompt: str) -> str:
         """Call the Gemini API with fallback logic and dynamic tool selection."""
@@ -235,14 +244,13 @@ class AIChat(commands.Cog):
                 # Using Flux model on Pollinations for much higher quality
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&model=flux"
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                        if resp.status != 200:
-                            logger.error("Pollinations returned status %d", resp.status)
-                            await ctx.send("⚠️ Image generation failed. Please try again.")
-                            return
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status != 200:
+                        logger.error("Pollinations returned status %d", resp.status)
+                        await ctx.send("⚠️ Image generation failed. Please try again.")
+                        return
 
-                        image_bytes = await resp.read()
+                    image_bytes = await resp.read()
 
                 file = discord.File(io.BytesIO(image_bytes), filename="generated_image.png")
                 
@@ -410,7 +418,8 @@ class AIChat(commands.Cog):
                 await ctx.send(f"⚠️ Failed to generate voice: {e}")
                 if 'output_file' in locals() and os.path.exists(output_file):
                     try: os.remove(output_file)
-                    except: pass
+                    except Exception:
+                        pass
 
 
 
