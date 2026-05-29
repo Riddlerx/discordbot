@@ -366,7 +366,9 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
 
         def do_extract():
             search_query = query
-            if not is_url_query(query) and not re.search(r"\b(audio|lyrics|song|official|music|mv|video)\b", query, re.I):
+            # Skip auto-appending "audio" if the user is already being specific about the version
+            # or if they are already looking for a cover/piano version.
+            if not is_url_query(query) and not re.search(r"\b(audio|lyrics|song|official|music|mv|video|original|origin|cover|piano|remix)\b", query, re.I):
                 search_query = f"{query} audio"
 
             def extract_with_options(extract_query: str, *, should_download: bool, playlist_items: str = "1"):
