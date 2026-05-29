@@ -992,8 +992,19 @@ class Music(commands.Cog):
                 await ctx.send(added_msg)
             else:
                 pos = len(st.queue)
-                await ctx.send(f"\U0001f4cb Added to queue (#{pos}): **{info.get('title')}**")
-            self._schedule_prefetch(ctx)
+                embed = discord.Embed(
+                    title="\U0001f4cb Added to Queue",
+                    description=f"**[{info.get('title')}]({info.get('webpage_url', '')})**",
+                    color=discord.Color.blue()
+                )
+                if info.get('thumbnail'):
+                    embed.set_thumbnail(url=info['thumbnail'])
+                embed.add_field(name="Position", value=f"#{pos}", inline=True)
+                if info.get('duration'):
+                    m, s = divmod(int(info['duration']), 60)
+                    embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
+                await ctx.send(embed=embed)
+",old_string:            self._schedule_prefetch(ctx)
         else:
             if playlist_tracks:
                 await ctx.send(added_msg)
@@ -1127,6 +1138,54 @@ class Music(commands.Cog):
         gc.collect()
         await ctx.send("\u23f9\ufe0f Stopped and left the channel.")
 
+    @commands.command(aliases=['pn'])
+    async def playnext(self, ctx, *, query: str):
+        """Add a song to the top of the queue so it plays next."""
+        if ctx.voice_client is None and not ctx.author.voice:
+            await ctx.send("\u274c Join a voice channel first.")
+            return
+
+        st = self.state(ctx.guild.id)
+        self._remember_context(ctx)
+        
+        searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}` to play next...")
+        
+        try:
+            # Resolve metadata first
+            if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
+                playlist_tracks = await extract_spotify_metadata(query)
+                if isinstance(playlist_tracks, list) and playlist_tracks:
+                    query = playlist_tracks[0]
+                elif playlist_tracks:
+                    query = playlist_tracks
+
+            try:
+                queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
+                queued_info['original_url'] = query
+            except Exception:
+                queued_info = {
+                    'title': query,
+                    'original_url': query,
+                }
+
+            await searching_msg.delete()
+            
+            vc = ctx.voice_client
+            if vc and (vc.is_playing() or vc.is_paused() or st.is_loading):
+                st.queue.appendleft(queued_info)
+                await ctx.send(f"\u23ed\ufe0f **Play Next**: Added to top of queue: **{queued_info.get('title', query)}**")
+                if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
+                    self._schedule_prefetch(ctx)
+            else:
+                # If nothing is playing, just use regular play logic
+                await self.play(ctx, query=query)
+                
+        except Exception as e:
+            if 'searching_msg' in locals():
+                await searching_msg.delete()
+            logger.exception("Error in playnext guild=%s query=%r: %s", ctx.guild.id, query, e)
+            await ctx.send(f"\u274c Could not load track: {e}")
+
     @commands.command(aliases=['q'])
     async def queue(self, ctx):
         """Show the current queue."""
@@ -1134,20 +1193,34 @@ class Music(commands.Cog):
         if not st.current_title and not st.queue and not st.is_loading:
             return await ctx.send("\U0001f4cb Queue is empty.")
 
-        lines = []
+        embed = discord.Embed(title="\U0001f4cb Current Music Queue", color=discord.Color.blue())
+        
         if st.is_loading:
-            lines.append("\u23f3 **Loading next song...**")
+            embed.description = "\u23f3 **Loading next song...**"
         elif st.current_title:
-            lines.append(f"\u25b6\ufe0f **Now playing:** {st.current_title}")
+            loop_status = f" (Loop: {st.loop_mode})" if st.loop_mode != "off" else ""
+            embed.description = f"\u25b6\ufe0f **Now playing:** [{st.current_title}]({st.current_info.get('webpage_url', '')}){loop_status}"
+            if st.current_info and st.current_info.get('thumbnail'):
+                embed.set_thumbnail(url=st.current_info['thumbnail'])
 
+        queue_list = []
         for i, info in enumerate(list(st.queue)[:10], 1):
             title = info.get('title', 'Unknown')
-            lines.append(f"`{i}.` {title}")
+            url = info.get('webpage_url', '')
+            if url:
+                queue_list.append(f"`{i}.` [{title}]({url})")
+            else:
+                queue_list.append(f"`{i}.` {title}")
 
+        if queue_list:
+            embed.add_field(name="Up Next", value="\n".join(queue_list), inline=False)
+        
         if len(st.queue) > 10:
-            lines.append(f"\u2026 and {len(st.queue) - 10} more")
+            embed.set_footer(text=f"Total songs in queue: {len(st.queue)} | ... and {len(st.queue) - 10} more")
+        else:
+            embed.set_footer(text=f"Total songs in queue: {len(st.queue)}")
 
-        await ctx.send("\n".join(lines))
+        await ctx.send(embed=embed)
 
     @commands.command(aliases=['vol'])
     async def volume(self, ctx, level: int):
@@ -1167,12 +1240,52 @@ class Music(commands.Cog):
         """Show the currently playing song."""
         st = self.state(ctx.guild.id)
         if st.is_loading:
-            await ctx.send("\u23f3 Loading next song...")
-        elif st.current_title:
-            await ctx.send(f"\u25b6\ufe0f Now playing: **{st.current_title}**")
-        else:
-            await ctx.send("\u274c Nothing is playing.")
+            return await ctx.send("\u23f3 Loading next song...")
+        
+        if not st.current_title:
+            return await ctx.send("\u274c Nothing is playing.")
 
+        info = st.current_info or {}
+        embed = discord.Embed(
+            title="\u25b6\ufe0f Now Playing",
+            description=f"**[{st.current_title}]({info.get('webpage_url', '')})**",
+            color=discord.Color.green()
+        )
+        
+        if info.get('thumbnail'):
+            embed.set_thumbnail(url=info['thumbnail'])
+            
+        uploader = info.get('uploader')
+        if uploader:
+            embed.add_field(name="Uploader", value=uploader, inline=True)
+            
+        duration = info.get('duration')
+        if duration:
+            # Format duration
+            m, s = divmod(int(duration), 60)
+            h, m = divmod(m, 60)
+            duration_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
+            
+            # Progress bar
+            if st.playback_started_at:
+                elapsed = int(time.monotonic() - st.playback_started_at)
+                em, es = divmod(elapsed, 60)
+                eh, em = divmod(em, 60)
+                elapsed_str = f"{eh:d}:{em:02d}:{es:02d}" if eh > 0 else f"{em:d}:{es:02d}"
+                
+                progress = min(1.0, elapsed / duration)
+                bar_len = 20
+                filled_len = int(bar_len * progress)
+                bar = "\u25ac" * filled_len + "\ud83d\udd18" + "\u25ac" * (bar_len - filled_len)
+                
+                embed.add_field(name="Duration", value=f"`{elapsed_str} / {duration_str}`\n{bar}", inline=False)
+            else:
+                embed.add_field(name="Duration", value=duration_str, inline=True)
+        
+        embed.set_footer(text=f"Requested by: {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+        
+        await ctx.send(embed=embed)
+",old_string:
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member == self.bot.user:
