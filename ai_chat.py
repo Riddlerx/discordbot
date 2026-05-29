@@ -3,6 +3,7 @@ import re
 import logging
 import io
 import asyncio
+import aiohttp
 from typing import Optional, Dict
 from collections import OrderedDict
 import discord
