@@ -61,7 +61,7 @@ async def help_command(ctx):
         "`!playnext` - Add song to top of queue\n"
         "`!skip` - Skip current track\n"
         "`!pause`/`!resume` - Toggle playback\n"
-",old_string:        "`!loop` - Cycle loop: off/song/queue\n"
+        "`!loop` - Cycle loop: off/song/queue\n"
         "`!volume <1-100>` - Set audio level\n"
         "`!q` - Show the queue\n"
         "`!np` - Show current song\n"
