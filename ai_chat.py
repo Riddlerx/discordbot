@@ -32,6 +32,10 @@ class AIChat(commands.Cog):
         self.cache: Dict[str, str] = OrderedDict()
         self.cache_max_size = 50
 
+        # Chat histories per user
+        self.chat_histories: Dict[int, list] = {}
+        self.history_max_length = 20 # 10 turns (user + model)
+
         if self.api_key:
             self.client = genai.Client(api_key=self.api_key)
             self.common_config = {
@@ -142,15 +146,16 @@ class AIChat(commands.Cog):
         
         return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
-    async def _call_gemini(self, prompt: str) -> str:
+    async def _call_gemini(self, prompt: str, user_id: Optional[int] = None) -> str:
         """Call the Gemini API with fallback logic and dynamic tool selection."""
-        # Check cache first
-        cache_key = prompt.strip().lower()
-        if cache_key in self.cache:
-            logger.info("Cache hit for prompt: %s", cache_key)
-            val = self.cache.pop(cache_key)
-            self.cache[cache_key] = val
-            return val
+        # Check cache first if no user_id (not a chat context)
+        if not user_id:
+            cache_key = prompt.strip().lower()
+            if cache_key in self.cache:
+                logger.info("Cache hit for prompt: %s", cache_key)
+                val = self.cache.pop(cache_key)
+                self.cache[cache_key] = val
+                return val
 
         # Determine priority based on keywords
         p_lower = prompt.lower()
@@ -161,6 +166,11 @@ class AIChat(commands.Cog):
         primary_config = self.wow_config if is_wow else self.search_config
         secondary_config = self.search_config if is_wow else self.wow_config
 
+        # Build contents array with history
+        history = self.chat_histories.get(user_id, []) if user_id else []
+        contents = list(history)
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
         # Try models in order
         for i, model_name in enumerate(self.models):
             for config_to_use in [primary_config, secondary_config]:
@@ -168,16 +178,23 @@ class AIChat(commands.Cog):
                 try:
                     response = await self.client.aio.models.generate_content(
                         model=model_name,
-                        contents=prompt,
+                        contents=contents,
                         config=config_to_use
                     )
                     
                     if not response.text:
                         continue
                     
-                    self.cache[cache_key] = response.text
-                    if len(self.cache) > self.cache_max_size:
-                        self.cache.popitem(last=False)
+                    if user_id:
+                        history.append({"role": "user", "parts": [{"text": prompt}]})
+                        history.append({"role": "model", "parts": [{"text": response.text}]})
+                        if len(history) > self.history_max_length:
+                            history = history[-self.history_max_length:]
+                        self.chat_histories[user_id] = history
+                    else:
+                        self.cache[cache_key] = response.text
+                        if len(self.cache) > self.cache_max_size:
+                            self.cache.popitem(last=False)
                         
                     return response.text
 
@@ -312,7 +329,7 @@ class AIChat(commands.Cog):
         logger.info("Processing !ask from %s: %s", ctx.author, prompt)
         async with ctx.typing():
             try:
-                text = await self._call_gemini(prompt)
+                text = await self._call_gemini(prompt, user_id=ctx.author.id)
                 logger.info("Gemini returned %d characters", len(text))
 
                 # Discord has a 2000 character limit per message
@@ -337,6 +354,15 @@ class AIChat(commands.Cog):
     async def ask_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before asking again.", delete_after=5)
+
+    @commands.command(name="forget")
+    async def forget(self, ctx):
+        """Clear your AI chat history so the AI forgets your previous messages."""
+        if ctx.author.id in self.chat_histories:
+            del self.chat_histories[ctx.author.id]
+            await ctx.send("🧹 **Chat history cleared!** I've completely forgotten our conversation. What would you like to talk about next?")
+        else:
+            await ctx.send("🧹 Your chat history was already empty!")
 
     @commands.command(name="say")
     @commands.cooldown(1, 5, commands.BucketType.user)
