@@ -146,7 +146,22 @@ class AIChat(commands.Cog):
         
         return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
-    async def _call_gemini(self, prompt: str, user_id: Optional[int] = None) -> str:
+    def _chunk_text(self, text: str, limit: int = 1990) -> list[str]:
+        """Safely split long messages without cutting words in half."""
+        chunks = []
+        while len(text) > limit:
+            split_idx = text.rfind('\n', 0, limit)
+            if split_idx == -1:
+                split_idx = text.rfind(' ', 0, limit)
+                if split_idx == -1:
+                    split_idx = limit
+            chunks.append(text[:split_idx])
+            text = text[split_idx:].lstrip()
+        if text:
+            chunks.append(text)
+        return chunks
+
+    async def _call_gemini(self, prompt: str, user_id: Optional[int] = None, image_parts: Optional[list] = None) -> str:
         """Call the Gemini API with fallback logic and dynamic tool selection."""
         # Check cache first if no user_id (not a chat context)
         if not user_id:
@@ -169,7 +184,12 @@ class AIChat(commands.Cog):
         # Build contents array with history
         history = self.chat_histories.get(user_id, []) if user_id else []
         contents = list(history)
-        contents.append({"role": "user", "parts": [{"text": prompt}]})
+        
+        user_parts = [{"text": prompt}]
+        if image_parts:
+            user_parts.extend(image_parts)
+            
+        contents.append({"role": "user", "parts": user_parts})
 
         # Try models in order
         for i, model_name in enumerate(self.models):
@@ -317,35 +337,50 @@ class AIChat(commands.Cog):
     @commands.command(name="ask")
     @commands.cooldown(1, 10, commands.BucketType.user)
     async def ask(self, ctx, *, prompt: str = None):
-        """Ask the AI a question."""
+        """Ask the AI a question. You can also attach images!"""
         if not self.api_key:
             await ctx.send("⚠️ AI chat is not configured. Missing `GEMINI_API_KEY`.")
             return
 
-        if not prompt:
-            await ctx.send("⚠️ Please provide a prompt. Example: `!ask What is the capital of France?`")
+        if not prompt and not ctx.message.attachments:
+            await ctx.send("⚠️ Please provide a prompt or attach an image. Example: `!ask What is in this image?`")
             return
+            
+        prompt = prompt or "Please describe this image."
 
         logger.info("Processing !ask from %s: %s", ctx.author, prompt)
         async with ctx.typing():
             try:
-                text = await self._call_gemini(prompt, user_id=ctx.author.id)
+                image_parts = []
+                for attachment in ctx.message.attachments:
+                    if attachment.content_type and attachment.content_type.startswith("image/"):
+                        if attachment.size > 5 * 1024 * 1024:
+                            await ctx.send(f"⚠️ Image {attachment.filename} is too large (max 5MB). Skipping.")
+                            continue
+                        
+                        image_bytes = await attachment.read()
+                        image_parts.append(
+                            types.Part.from_bytes(data=image_bytes, mime_type=attachment.content_type)
+                        )
+
+                text = await self._call_gemini(prompt, user_id=ctx.author.id, image_parts=image_parts)
                 logger.info("Gemini returned %d characters", len(text))
 
                 # Discord has a 2000 character limit per message
-                if len(text) > 2000:
-                    chunks = [text[i:i + 1990] for i in range(0, len(text), 1990)]
-                    for chunk in chunks[:3]:
+                if len(text) > 1990:
+                    chunks = self._chunk_text(text)
+                    for chunk in chunks:
                         await ctx.send(chunk)
                 else:
                     await ctx.send(text)
 
             except APIError as e:
                 logger.error("AI API error: %s", e)
-                if "daily quotas reached" in str(e).lower():
-                    await ctx.send("🛑 **Daily chat limit reached!** The AI has run out of juice for today. Please try again tomorrow! 😴")
+                err_lower = str(e).lower()
+                if "429" in err_lower or "quota" in err_lower or "resource exhausted" in err_lower:
+                    await ctx.send("🛑 **AI Limit Reached!** I have run out of AI credits/quota for right now. Please try again later! 😴")
                 else:
-                    await ctx.send(f"⚠️ {e}")
+                    await ctx.send(f"⚠️ Something went wrong with the AI: {e}")
             except Exception as e:
                 logger.exception("Unexpected error in AI chat")
                 await ctx.send("⚠️ Something went wrong. Please try again.")
