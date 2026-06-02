@@ -339,13 +339,10 @@ class Music(commands.Cog):
         # Output options:
         # -vn           : discard video, audio only
         # -loglevel     : suppress verbose FFmpeg output
-        # For local opus/webm files with no seek/volume change, copy the
-        # stream directly — zero CPU re-encoding, minimal latency on e2-micro
-        is_opus_file = not is_url and audio_path.endswith((".webm", ".opus"))
-        if is_opus_file and seek_seconds == 0 and volume == 1.0:
-            ffmpeg_options = "-vn -loglevel warning -c:a copy"
-        else:
-            ffmpeg_options = f"-vn -loglevel warning -af volume={volume}"
+        # Volume normalization is applied using the loudnorm filter to keep tracks
+        # at a consistent volume level.
+        # Note: loudnorm prevents us from using `-c:a copy` because it requires re-encoding.
+        ffmpeg_options = f"-vn -loglevel warning -af loudnorm,volume={volume}"
 
         logger.debug("Creating audio source path=%s before_options=%r", audio_path, before_options)
 
@@ -906,7 +903,8 @@ class Music(commands.Cog):
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
         vc = ctx.voice_client
-        if vc and (vc.is_playing() or vc.is_paused() or st.is_loading):
+        is_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+        if is_busy or (vc and st.queue):
             playlist_tracks = None
             if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
                 playlist_tracks = await extract_spotify_metadata(query)
@@ -945,7 +943,9 @@ class Music(commands.Cog):
                     embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
                 await ctx.send(embed=embed)
 
-            if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
+            if not is_busy:
+                self._advance(ctx.guild.id)
+            elif _PREFETCH_ENABLED and not _FAST_START_STREAMING:
                 self._schedule_prefetch(ctx)
             return
 
@@ -1020,7 +1020,8 @@ class Music(commands.Cog):
             return
 
         vc = ctx.voice_client
-        if vc.is_playing() or vc.is_paused() or st.is_loading:
+        is_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+        if is_busy or st.queue:
             st.queue.append(info)
             if added_msg:
                 await ctx.send(added_msg)
@@ -1038,7 +1039,11 @@ class Music(commands.Cog):
                     m, s = divmod(int(info['duration']), 60)
                     embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
                 await ctx.send(embed=embed)
-            self._schedule_prefetch(ctx)
+            
+            if not is_busy:
+                self._advance(ctx.guild.id)
+            else:
+                self._schedule_prefetch(ctx)
         else:
             if added_msg:
                 await ctx.send(added_msg)

@@ -69,6 +69,21 @@ class AIChat(commands.Cog):
         if self._session and not self._session.closed:
             await self._session.close()
 
+    async def cog_check(self, ctx: commands.Context) -> bool:
+        """Restrict AI commands to one text channel per guild."""
+        if ctx.guild is None:
+            await ctx.send("\u274c AI commands can only be used in a server.")
+            return False
+
+        # Default to 'ai_chat' if not specified in environment
+        ai_channel_name = os.getenv("AI_TEXT_CHANNEL", "ai_chat")
+
+        if isinstance(ctx.channel, discord.TextChannel) and ctx.channel.name == ai_channel_name:
+            return True
+
+        await ctx.send(f"\u274c AI commands can only be used in the #{ai_channel_name} channel.")
+        return False
+
     async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
         Lookup a World of Warcraft character's stats, level, class, and progress.
