@@ -661,36 +661,44 @@ class Music(commands.Cog):
         st.current_info = info
         title = info.get('title', 'Unknown')
 
-        # Use local file if available, otherwise resolve a stream/file for playback.
-        audio_path = info.get('_audio_path')
-        if not audio_path or (not audio_path.startswith("http") and not os.path.exists(audio_path)):
-            try:
-                query = info.get('original_url') or info.get('webpage_url') or info.get('title')
-                try:
-                    info, audio_path = await search_and_download(query, download=not _FAST_START_STREAMING)
-                except Exception as e:
-                    if not _FAST_START_STREAMING:
-                        logger.warning("Download failed for track, falling back to stream: %s", e)
-                        info, audio_path = await search_and_download(query, download=False)
-                    else:
-                        logger.warning("Fast-start stream failed for track, falling back to download: %s", e)
-                        info, audio_path = await search_and_download(query, download=True)
-
-                st.current_info = info
-                title = info.get('title', title)
-            except Exception as e:
-                if text_channel:
-                    await text_channel.send(f"❌ Could not load track: {e}")
-                st.is_loading = False
-                self._advance(guild.id)
-                return
-
-        st.current_file = audio_path
-
         try:
+            # Use local file if available, otherwise resolve a stream/file for playback.
+            audio_path = info.get('_audio_path')
+            if not audio_path or (not audio_path.startswith("http") and not os.path.exists(audio_path)):
+                try:
+                    query = info.get('original_url') or info.get('webpage_url') or info.get('title')
+                    try:
+                        info, audio_path = await asyncio.wait_for(
+                            search_and_download(query, download=not _FAST_START_STREAMING),
+                            timeout=45.0
+                        )
+                    except Exception as e:
+                        if not _FAST_START_STREAMING:
+                            logger.warning("Download failed for track, falling back to stream: %s", e)
+                            info, audio_path = await asyncio.wait_for(
+                                search_and_download(query, download=False),
+                                timeout=45.0
+                            )
+                        else:
+                            logger.warning("Fast-start stream failed for track, falling back to download: %s", e)
+                            info, audio_path = await asyncio.wait_for(
+                                search_and_download(query, download=True),
+                                timeout=45.0
+                            )
+
+                    st.current_info = info
+                    title = info.get('title', title)
+                except Exception as e:
+                    if text_channel:
+                        await text_channel.send(f"❌ Could not load track: {e}")
+                    self._advance(guild.id)
+                    return
+
+            st.current_file = audio_path
+
             if guild.voice_client:
                 loop_status = f" (Loop: {st.loop_mode})" if st.loop_mode != "off" else ""
-                
+
                 embed = discord.Embed(
                     title="\u25b6\ufe0f Now Playing",
                     description=f"**[{title}]({info.get('webpage_url', '')})**{loop_status}",
@@ -698,7 +706,7 @@ class Music(commands.Cog):
                 )
                 if info.get('thumbnail'):
                     embed.set_thumbnail(url=info['thumbnail'])
-                
+
                 await self._start_playback(
                     guild,
                     info,
@@ -709,13 +717,14 @@ class Music(commands.Cog):
                 )
             else:
                 st.current_title = None
-                st.is_loading = False
+                self._advance(guild.id)
         except Exception as exc:
             if text_channel:
                 await text_channel.send(f"\u274c Playback failed: {exc}")
             st.current_title = None
-            st.is_loading = False
             self._advance(guild.id)
+        finally:
+            st.is_loading = False
 
     def _schedule_prefetch(self, guild_ref):
         guild_id = guild_ref.guild.id if hasattr(guild_ref, "guild") else guild_ref
@@ -745,7 +754,10 @@ class Music(commands.Cog):
             return
 
         try:
-            resolved_info, path = await search_and_download(query, download=True)
+            resolved_info, path = await asyncio.wait_for(
+                search_and_download(query, download=True),
+                timeout=45.0
+            )
         except Exception as exc:
             logger.debug("Background download failed guild=%s track=%s: %s", guild_id, track_label(info), exc)
             return
@@ -770,7 +782,10 @@ class Music(commands.Cog):
             try:
                 query = self._track_query(next_track)
                 if query:
-                    info, path = await self._resolve_track_audio(next_track, allow_stream_fallback=False)
+                    info, path = await asyncio.wait_for(
+                        self._resolve_track_audio(next_track, allow_stream_fallback=False),
+                        timeout=45.0
+                    )
                     if st.queue and st.queue[0] is next_track:
                         st.queue[0].update(info)
                         st.queue[0]["_audio_path"] = path
@@ -979,12 +994,20 @@ class Music(commands.Cog):
                 # Single track or normal search
                 s_dl = time.perf_counter()
                 try:
-                    info, audio_path = await search_and_download(query, download=not _FAST_START_STREAMING)
+                    info, audio_path = await asyncio.wait_for(
+                        search_and_download(query, download=not _FAST_START_STREAMING),
+                        timeout=45.0
+                    )
+                except asyncio.TimeoutError:
+                    raise Exception("Search timed out after 45 seconds.")
                 except Exception:
                     if not _FAST_START_STREAMING:
                         raise
                     logger.warning("Fast-start stream failed, retrying with download query=%r", query, exc_info=True)
-                    info, audio_path = await search_and_download(query, download=True)
+                    info, audio_path = await asyncio.wait_for(
+                        search_and_download(query, download=True),
+                        timeout=45.0
+                    )
                 elapsed = time.perf_counter() - s_dl
                 logger.info(
                     "Search+%s guild=%s took %.2fs",
@@ -1006,6 +1029,41 @@ class Music(commands.Cog):
                 time.perf_counter() - voice_start,
             )
 
+            # Re-check busy status after potentially slow resolution to avoid race conditions
+            vc = ctx.voice_client
+            is_busy_now = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+            
+            if not voice_ok:
+                return
+
+            if is_busy_now or st.queue:
+                st.queue.append(info)
+                if added_msg:
+                    await ctx.send(added_msg)
+                else:
+                    pos = len(st.queue)
+                    embed = discord.Embed(
+                        title="\U0001f4cb Added to Queue",
+                        description=f"**[{info.get('title')}]({info.get('webpage_url', '')})**",
+                        color=discord.Color.blue()
+                    )
+                    if info.get('thumbnail'):
+                        embed.set_thumbnail(url=info['thumbnail'])
+                    embed.add_field(name="Position", value=f"#{pos}", inline=True)
+                    if info.get('duration'):
+                        m, s = divmod(int(info['duration']), 60)
+                        embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
+                    await ctx.send(embed=embed)
+                
+                if not is_busy_now:
+                    self._advance(ctx.guild.id)
+                else:
+                    self._schedule_prefetch(ctx)
+            else:
+                if added_msg:
+                    await ctx.send(added_msg)
+                await self._play_track(ctx, info, ensure_voice=False)
+
         except Exception as e:
             if not voice_task.done():
                 voice_task.cancel()
@@ -1013,41 +1071,9 @@ class Music(commands.Cog):
                 await searching_msg.delete()
             logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
             return await ctx.send(f"\u274c Could not load track: {e}")
+        
         if 'searching_msg' in locals():
             await searching_msg.delete()
-            
-        if not voice_ok:
-            return
-
-        vc = ctx.voice_client
-        is_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
-        if is_busy or st.queue:
-            st.queue.append(info)
-            if added_msg:
-                await ctx.send(added_msg)
-            else:
-                pos = len(st.queue)
-                embed = discord.Embed(
-                    title="\U0001f4cb Added to Queue",
-                    description=f"**[{info.get('title')}]({info.get('webpage_url', '')})**",
-                    color=discord.Color.blue()
-                )
-                if info.get('thumbnail'):
-                    embed.set_thumbnail(url=info['thumbnail'])
-                embed.add_field(name="Position", value=f"#{pos}", inline=True)
-                if info.get('duration'):
-                    m, s = divmod(int(info['duration']), 60)
-                    embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
-                await ctx.send(embed=embed)
-            
-            if not is_busy:
-                self._advance(ctx.guild.id)
-            else:
-                self._schedule_prefetch(ctx)
-        else:
-            if added_msg:
-                await ctx.send(added_msg)
-            await self._play_track(ctx, info, ensure_voice=False)
 
     @commands.command(aliases=['pn'])
     async def playnext(self, ctx, *, query: str):
