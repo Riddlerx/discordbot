@@ -297,8 +297,8 @@ class Music(commands.Cog):
             "-nostdin",
             # Increase probe size & analysis duration so FFmpeg doesn't stall
             # on stream detection — speeds up playback start on high-RTT links
-            "-probesize", "32768",
-            "-analyzeduration", "0",
+            "-probesize", "1M",
+            "-analyzeduration", "500k",
         ]
 
         if is_url:
@@ -339,10 +339,8 @@ class Music(commands.Cog):
         # Output options:
         # -vn           : discard video, audio only
         # -loglevel     : suppress verbose FFmpeg output
-        # Volume normalization is applied using the loudnorm filter to keep tracks
-        # at a consistent volume level.
-        # Note: loudnorm prevents us from using `-c:a copy` because it requires re-encoding.
-        ffmpeg_options = f"-vn -loglevel warning -af loudnorm,volume={volume}"
+        # Volume is applied using the volume filter.
+        ffmpeg_options = f"-vn -loglevel warning -af volume={volume}"
 
         logger.debug("Creating audio source path=%s before_options=%r", audio_path, before_options)
 
@@ -363,13 +361,10 @@ class Music(commands.Cog):
             )
         except Exception as exc:
             logger.warning("FFmpegOpusAudio failed for path=%s; falling back to PCMAudio: %s", audio_path, exc)
-            return discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
-                    audio_path,
-                    before_options=before_options_str,
-                    options=ffmpeg_options,
-                ),
-                volume=volume,
+            return discord.FFmpegPCMAudio(
+                audio_path,
+                before_options=before_options_str,
+                options=ffmpeg_options,
             )
 
     async def _start_playback(
