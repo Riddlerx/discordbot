@@ -1030,15 +1030,12 @@ class WoW(commands.Cog):
             await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
 
     @booster.command(name="stats")
-    async def booster_stats(self, ctx, member: discord.Member = None):
-        """Check weekly boost run stats for yourself or another member."""
-        member = member or ctx.author
-        
+    async def booster_stats(self, ctx):
+        """View the current weekly boosting run counts for all registered boosters."""
         async with ctx.typing():
-            # Refresh data for this member's characters
+            # Refresh data for all trackers
             updated = False
-            my_trackers = [t for t in self.booster_config if t["discord_id"] == member.id]
-            for tracker in my_trackers:
+            for tracker in self.booster_config:
                 if await self.scan_booster(tracker, self._session):
                     updated = True
             
@@ -1046,20 +1043,26 @@ class WoW(commands.Cog):
                 await self.save_state()
 
             embed = discord.Embed(
-                title=f"🚀 Weekly Stats: {member.display_name}",
-                color=discord.Color.green()
+                title="🚀 Weekly Booster Stats",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
             )
-            embed.set_thumbnail(url=member.display_avatar.url)
             
-            if not my_trackers:
+            if not self.booster_config:
                 embed.description = "No characters registered for tracking."
             else:
+                # Sort by count
+                sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
                 lines = []
-                for t in my_trackers:
+                for t in sorted_trackers:
                     count = t.get("weekly_count", 0)
-                    lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
+                    if count > 0:
+                        lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
                 
-                embed.description = "\n".join(lines)
+                if lines:
+                    embed.description = "\n".join(lines)
+                else:
+                    embed.description = "No boosting runs completed this week yet."
                 
             await ctx.send(embed=embed)
 
