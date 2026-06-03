@@ -1007,6 +1007,50 @@ class WoW(commands.Cog):
             
             await ctx.send(f"✅ Registered **{profile['name']}-{profile['realm']['name']}**! I've back-dated tracking to this week's Tuesday reset. 🚀")
 
+    @booster.command(name="register_bulk")
+    async def booster_register_bulk(self, ctx, *, char_list: str):
+        """Register multiple characters at once, comma separated. (e.g., !booster register_bulk Name-Realm, Name2-Realm2)"""
+        queries = [q.strip() for q in char_list.split(',')]
+        results = []
+        
+        async with ctx.typing():
+            for query in queries:
+                name, realm = self._parse_char_query(query)
+                profile = await self.get_character_profile(self._session, name, realm)
+                
+                if not profile:
+                    results.append(f"❌ {query}: Not found")
+                    continue
+                
+                # Check if already registered
+                if any(t["name"].lower() == profile["name"].lower() and t["realm"].lower() == profile["realm"]["slug"] for t in self.booster_config):
+                    results.append(f"⚠️ {query}: Already tracked")
+                    continue
+
+                # Calculate Tuesday reset
+                now_ts = time.time()
+                dt_utc = time.gmtime(now_ts)
+                days_since_tue = (dt_utc.tm_wday - 1) % 7
+                import calendar
+                tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+                tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+                tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+                if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
+                iso_start = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+                
+                new_tracker = {
+                    "discord_id": ctx.author.id,
+                    "name": profile["name"],
+                    "realm": profile["realm"]["slug"],
+                    "last_run_at": iso_start
+                }
+                self.booster_config.append(new_tracker)
+                await self.scan_booster(new_tracker, self._session)
+                results.append(f"✅ {profile['name']}-{profile['realm']['name']}: Registered")
+            
+            await self.save_state()
+            await ctx.send("📋 **Bulk Registration Results:**\n" + "\n".join(results))
+
     @booster.command(name="unregister")
     async def booster_unregister(self, ctx, *, char_query: str):
         """Stop tracking a character."""
