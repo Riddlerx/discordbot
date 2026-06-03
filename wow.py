@@ -55,6 +55,10 @@ class WoW(commands.Cog):
 
         self.guild_vault_message_id: Optional[int] = None
         self.last_content: Optional[str] = None
+        
+        # Booster tracking state
+        self.booster_config: List[Dict] = []  # List of {discord_id, name, realm, last_run_at, weekly_count}
+        self.last_weekly_report: str = ""  # ISO date of last Tuesday report
 
         self.blizzard_semaphore = asyncio.Semaphore(10)
         self.auto_update_task: Optional[asyncio.Task] = None
@@ -70,6 +74,10 @@ class WoW(commands.Cog):
     async def cog_unload(self):
         if self.auto_update_task:
             self.auto_update_task.cancel()
+        if hasattr(self, 'booster_tracker_task') and self.booster_tracker_task:
+            self.booster_tracker_task.cancel()
+        if hasattr(self, 'weekly_report_task') and self.weekly_report_task:
+            self.weekly_report_task.cancel()
         if self._session and not self._session.closed:
             await self._session.close()
 
@@ -81,6 +89,20 @@ class WoW(commands.Cog):
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
 
+    def _parse_char_query(self, query: str) -> tuple:
+        """Extract name and realm from a query string. Supports 'name-realm' or just 'name'."""
+        name, realm = query.strip(), self.guild_realm
+        if "-" in query:
+            # WoW names cannot have dashes, so the first dash must be the separator
+            parts = query.split("-", 1)
+            name = parts[0].strip()
+            # Normalize realm slug: spaces/dashes to hyphens, remove quotes
+            realm = parts[1].strip().lower().replace(" ", "-").replace("'", "")
+            # Ensure multiple hyphens (from user input like area--52) are collapsed
+            while "--" in realm:
+                realm = realm.replace("--", "-")
+        return name, realm
+
     async def load_state(self):
         """Load persistent bot state without blocking the event loop."""
         async with self.state_lock:
@@ -90,6 +112,8 @@ class WoW(commands.Cog):
                 state = await asyncio.to_thread(self._read_state_file)
                 self.guild_vault_message_id = state.get("guild_vault_message_id")
                 self.last_content = state.get("last_content")
+                self.booster_config = state.get("booster_config", [])
+                self.last_weekly_report = state.get("last_weekly_report", "")
             except Exception as e:
                 logger.warning("Error loading state: %s", e)
 
@@ -97,7 +121,9 @@ class WoW(commands.Cog):
         """Persist bot state without blocking the event loop."""
         state = {
             "guild_vault_message_id": self.guild_vault_message_id,
-            "last_content": self.last_content
+            "last_content": self.last_content,
+            "booster_config": self.booster_config,
+            "last_weekly_report": self.last_weekly_report
         }
         async with self.state_lock:
             await asyncio.to_thread(self._write_state_file, state)
@@ -624,6 +650,14 @@ class WoW(commands.Cog):
         if self.auto_update_task is None or self.auto_update_task.done():
             self.auto_update_task = self.bot.loop.create_task(self.auto_update())
             logger.info("Started WoW leaderboard auto-update task.")
+        
+        if not hasattr(self, 'booster_tracker_task') or self.booster_tracker_task is None or self.booster_tracker_task.done():
+            self.booster_tracker_task = self.bot.loop.create_task(self.booster_auto_tracker())
+            logger.info("Started WoW booster auto-tracker task.")
+
+        if not hasattr(self, 'weekly_report_task') or self.weekly_report_task is None or self.weekly_report_task.done():
+            self.weekly_report_task = self.bot.loop.create_task(self.weekly_report_checker())
+            logger.info("Started WoW weekly report checker task.")
 
     async def auto_update(self):
         await self.bot.wait_until_ready()
@@ -670,6 +704,128 @@ class WoW(commands.Cog):
                     logger.exception("Leaderboard update loop error: %s", e)
                 
                 await asyncio.sleep(1800)
+
+    async def scan_booster(self, tracker, session: aiohttp.ClientSession) -> bool:
+        """Scan a single booster character for new runs. Returns True if new runs were found."""
+        try:
+            name, realm = tracker["name"], tracker["realm"]
+            last_run_at = tracker.get("last_run_at", "")
+
+            rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
+            
+            data = await self.safe_get(session, rio_url)
+            if not data:
+                return False
+
+            recent_runs = data.get("mythic_plus_recent_runs", [])
+            new_runs = []
+            for run in recent_runs:
+                # Track runs that are Mythic 8+
+                if run.get("mythic_level", 0) >= 8:
+                    completed_at = run.get("completed_at")
+                    if completed_at and completed_at > last_run_at:
+                        # Use par_time_ms from API if available
+                        clear_time_ms = run.get("clear_time_ms", 0)
+                        par_time_ms = run.get("par_time_ms", 0)
+                        
+                        if par_time_ms > 0:
+                            efficiency = clear_time_ms / par_time_ms
+                            if efficiency <= 0.90:
+                                new_runs.append(completed_at)
+                                logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{run.get('mythic_level')} in {clear_time_ms/60000:.1f}m ({efficiency:.1%} of timer)")
+                            else:
+                                logger.info(f"Regular run: {name} cleared {run.get('dungeon')} +{run.get('mythic_level')} in {clear_time_ms/60000:.1f}m ({efficiency:.1%} of timer)")
+                        else:
+                            logger.warning(f"No par time for {run.get('dungeon')} on {name}")
+
+            if new_runs:
+                count = len(new_runs)
+                tracker["weekly_count"] = tracker.get("weekly_count", 0) + count
+                tracker["last_run_at"] = max(new_runs)
+                logger.info("Added %d boost runs for %s-%s", count, name, realm)
+                return True
+        except Exception as e:
+            logger.error("Error tracking boost runs for %s-%s: %s", tracker.get("name"), tracker.get("realm"), e)
+        return False
+
+    async def booster_auto_tracker(self):
+        """Periodically poll Raider.io for new Mythic 8+ runs for registered boosters."""
+        await self.bot.wait_until_ready()
+        async with aiohttp.ClientSession() as session:
+            while not self.bot.is_closed():
+                if not self.booster_config:
+                    await asyncio.sleep(60)
+                    continue
+
+                logger.info("Starting boost auto-tracker cycle for %d characters", len(self.booster_config))
+                updated = False
+                for tracker in self.booster_config:
+                    if await self.scan_booster(tracker, session):
+                        updated = True
+                    await asyncio.sleep(2) # Avoid aggressive polling
+
+                if updated:
+                    await self.save_state()
+
+                await asyncio.sleep(3600) # Run every hour
+
+    async def weekly_report_checker(self):
+        """Check for WoW Tuesday reset and post the weekly booster summary."""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                # WoW US Reset is Tuesday 15:00 UTC (8:00 AM PST)
+                now = time.gmtime()
+                # 1 = Tuesday
+                if now.tm_wday == 1 and now.tm_hour >= 15:
+                    today_iso = f"{now.tm_year}-{now.tm_mon:02d}-{now.tm_mday:02d}"
+                    if self.last_weekly_report != today_iso:
+                        await self.send_weekly_booster_report()
+                        self.last_weekly_report = today_iso
+                        # Reset counts for all characters
+                        for tracker in self.booster_config:
+                            tracker["weekly_count"] = 0
+                        await self.save_state()
+            except Exception as e:
+                logger.error("Error in weekly report checker: %s", e)
+            
+            await asyncio.sleep(3600) # Check every hour
+
+    async def send_weekly_booster_report(self):
+        """Send the weekly booster summary to the guild channel."""
+        channel = self.bot.get_channel(self.guild_channel_id)
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(self.guild_channel_id)
+            except Exception:
+                logger.error("Could not find guild channel %s for weekly report", self.guild_channel_id)
+                return
+
+        # Sort all tracked characters by count
+        sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
+        
+        embed = discord.Embed(
+            title="📊 Weekly Booster Run Summary",
+            description="Mythic 8+ Boosting runs completed this week:",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        if not sorted_trackers or all(t.get("weekly_count", 0) == 0 for t in sorted_trackers):
+            embed.description = "No boosting runs tracked this week."
+        else:
+            lines = []
+            for t in sorted_trackers:
+                count = t.get("weekly_count", 0)
+                if count > 0:
+                    lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
+            
+            if lines:
+                embed.add_field(name="Character Performance", value="\n".join(lines), inline=False)
+            else:
+                embed.description = "No boosting runs tracked this week."
+
+        await channel.send(embed=embed)
 
     @commands.command()
     async def guildvault(self, ctx):
@@ -749,10 +905,7 @@ class WoW(commands.Cog):
     async def lookup(self, ctx, *, query: str):
         """Lookup a WoW character: name-realm or name."""
         async with ctx.typing():
-            name, realm = query, self.guild_realm
-            if "-" in query:
-                parts = query.rsplit("-", 1)
-                name, realm = parts[0].strip(), parts[1].strip().lower().replace(" ", "").replace("'", "")
+            name, realm = self._parse_char_query(query)
 
             session = self._session
             profile = await self.get_character_profile(session, name, realm)
@@ -786,6 +939,128 @@ class WoW(commands.Cog):
             embed.add_field(name="Stats", value=f"**ilvl:** {ilvl}\n**M+ Score:** {score}", inline=True)
             embed.add_field(name="Weekly Vault", value=f"**Keys:** {keys[0]}/{keys[1]}/{keys[2]}\n**Raid:** {'/'.join(raid)}", inline=True)
             
+            await ctx.send(embed=embed)
+
+    @commands.group(name="booster", invoke_without_command=True)
+    async def booster(self, ctx):
+        """Weekly booster tracking (Fast Mythic 8+)."""
+        if ctx.invoked_subcommand is None:
+            embed = discord.Embed(
+                title="🚀 Booster Run Tracking",
+                description=(
+                    "Track the number of 'Boosting Runs' completed each week.\n"
+                    "A boost is defined as a **Mythic 8+** cleared in **< 90%** of the timer.\n\n"
+                    "**Commands:**\n"
+                    "`!booster register name-realm` - Start tracking a character\n"
+                    "`!booster unregister name-realm` - Stop tracking a character\n"
+                    "`!booster stats [@user]` - View current weekly run count"
+                ),
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed)
+
+    @booster.command(name="register")
+    async def booster_register(self, ctx, *, char_query: str):
+        """Register a character for weekly 8+ run tracking."""
+        name, realm = self._parse_char_query(char_query)
+
+        async with ctx.typing():
+            profile = await self.get_character_profile(self._session, name, realm)
+            if not profile:
+                return await ctx.send(f"❌ Character **{name}** on **{realm}** not found.")
+
+            # Check if already registered
+            for t in self.booster_config:
+                if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                    return await ctx.send(f"⚠️ **{name}-{realm}** is already being tracked.")
+
+            # Calculate the most recent Tuesday 15:00 UTC
+            now_ts = time.time()
+            dt_utc = time.gmtime(now_ts)
+            # 0=Mon, 1=Tue, ..., 6=Sun. 
+            # (days_since_tue = 0 if today is Tue, 1 if Wed, etc.)
+            days_since_tue = (dt_utc.tm_wday - 1) % 7
+            
+            # Get Tuesday at 15:00 UTC
+            import calendar
+            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+            
+            # If it is Tuesday but before 15:00, go back 7 days
+            if now_ts < tue_reset_ts:
+                tue_reset_ts -= 7 * 86400
+                
+            iso_start = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+            
+            new_tracker = {
+                "discord_id": ctx.author.id,
+                "name": profile["name"],
+                "realm": profile["realm"]["slug"],
+                "last_run_at": iso_start
+            }
+            self.booster_config.append(new_tracker)
+            
+            # Immediate scan to pick up runs since reset
+            await self.scan_booster(new_tracker, self._session)
+            await self.save_state()
+            
+            await ctx.send(f"✅ Registered **{profile['name']}-{profile['realm']['name']}**! I've back-dated tracking to this week's Tuesday reset. 🚀")
+
+    @booster.command(name="unregister")
+    async def booster_unregister(self, ctx, *, char_query: str):
+        """Stop tracking a character."""
+        name, realm = self._parse_char_query(char_query)
+
+        found = False
+        new_trackers = []
+        for t in self.booster_config:
+            if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                if t["discord_id"] != ctx.author.id and not ctx.author.guild_permissions.manage_guild:
+                    return await ctx.send("⛔ You can only unregister your own characters.")
+                found = True
+            else:
+                new_trackers.append(t)
+        
+        if found:
+            self.booster_config = new_trackers
+            await self.save_state()
+            await ctx.send(f"✅ Stopped tracking **{name}-{realm}**.")
+        else:
+            await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
+
+    @booster.command(name="stats")
+    async def booster_stats(self, ctx, member: discord.Member = None):
+        """Check weekly boost run stats for yourself or another member."""
+        member = member or ctx.author
+        
+        async with ctx.typing():
+            # Refresh data for this member's characters
+            updated = False
+            my_trackers = [t for t in self.booster_config if t["discord_id"] == member.id]
+            for tracker in my_trackers:
+                if await self.scan_booster(tracker, self._session):
+                    updated = True
+            
+            if updated:
+                await self.save_state()
+
+            embed = discord.Embed(
+                title=f"🚀 Weekly Stats: {member.display_name}",
+                color=discord.Color.green()
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            if not my_trackers:
+                embed.description = "No characters registered for tracking."
+            else:
+                lines = []
+                for t in my_trackers:
+                    count = t.get("weekly_count", 0)
+                    lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
+                
+                embed.description = "\n".join(lines)
+                
             await ctx.send(embed=embed)
 
 

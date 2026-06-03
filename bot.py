@@ -77,7 +77,8 @@ async def help_command(ctx):
         "💰 **Economy & WoW**\n"
         "`!price item[:realm]` - Check WoW AH\n"
         "`!lookup name[-realm]` - WoW character stats\n"
-        "`!guildvault` - Show guild leaderboard"
+        "`!guildvault` - Show guild leaderboard\n"
+        "`!booster` - Weekly m+ run tracking"
     )
     await ctx.send(msg)
 
@@ -234,6 +235,7 @@ if __name__ == "__main__":
                         logger.info("Music extension loaded")
                     except Exception as e:
                         logger.exception("Failed to load music extension: %s", e)
+                # (Booster tracker removed)
                 
                 await bot.start(DISCORD_BOT_TOKEN)
         
