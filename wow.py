@@ -569,7 +569,46 @@ class WoW(commands.Cog):
             return (char["name"], keys, raid, score, char["class_id"])
         return None
 
+    async def get_wow_token_prices(self, session: aiohttp.ClientSession) -> str:
+        """
+        Get the current WoW Token price in gold for all major regions (US, EU, KR, TW).
+        Use this tool whenever a user asks for WoW Token prices.
+        """
+        regions = {
+            "us": "dynamic-us",
+            "eu": "dynamic-eu",
+            "kr": "dynamic-kr",
+            "tw": "dynamic-tw"
+        }
+        
+        token = await self.get_access_token(session)
+        if not token:
+            return "Unable to authenticate with Blizzard API."
+
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        async def fetch_region(region_name, namespace):
+            url = f"https://{region_name}.api.blizzard.com/data/wow/token/index"
+            params = {"namespace": namespace, "locale": "en_US"}
+            try:
+                data = await self.safe_get(session, url, headers=headers, params=params)
+                if data and "price" in data:
+                    return f"{region_name.upper()}: {data['price'] / 10000:,.0f} gold"
+            except Exception as e:
+                logger.warning("Error fetching token price for %s: %s", region_name, e)
+            return None
+
+        tasks = [fetch_region(r, ns) for r, ns in regions.items()]
+        results = await asyncio.gather(*tasks)
+        
+        prices = [r for r in results if r]
+        if not prices:
+            return "Could not retrieve WoW Token prices at this time."
+            
+        return "\n".join(prices)
+
     async def get_wow_token_price(self, session: aiohttp.ClientSession) -> float:
+        """Deprecated: use get_wow_token_prices for multiple regions. Still used by guild vault."""
         token = await self.get_access_token(session)
         if not token: return 0
         url = "https://us.api.blizzard.com/data/wow/token/index"

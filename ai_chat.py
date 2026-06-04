@@ -45,23 +45,24 @@ class AIChat(commands.Cog):
                     "When asked about a World of Warcraft (WoW) character, player, or stats, "
                     "you MUST use the 'lookup_wow_character' tool. If the data shows they are undergeared "
                     "or have low progress, feel free to give them a friendly, witty roast or tease them about it. "
-                    "For real-time information like weather, news, current events, or WoW Token prices, use the Google Search tool. "
-                    "You can use both tools if needed. Do NOT tell the user you are going to search; just use the tools and wait for results. "
+                    "When asked about the WoW Token price, use the 'lookup_wow_token' tool. "
+                    "For general real-time information like weather, news, or current events, use the Google Search tool. "
+                    "Do NOT tell the user you are going to search; just use the tools and wait for results. "
                     "Provide a detailed and engaging final answer based on the tools' output. "
                     "Respond in the same language as the user."
                 ),
                 "temperature": 0.8,
                 "max_output_tokens": 4096,
             }
-            # Combined config: Always provide both tools to prevent "mode switching" errors
-            self.combined_config = types.GenerateContentConfig(
+            self.wow_config = types.GenerateContentConfig(
                 **self.common_config,
-                tools=[
-                    self.lookup_wow_character,
-                    types.Tool(google_search=types.GoogleSearch())
-                ]
+                tools=[self.lookup_wow_character, self.lookup_wow_token]
             )
-            logger.info("Gemini AI configured with combined tools across fallback models.")
+            self.search_config = types.GenerateContentConfig(
+                **self.common_config,
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            )
+            logger.info("Gemini AI configured with split WoW and Search tools.")
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
@@ -88,6 +89,17 @@ class AIChat(commands.Cog):
 
         await ctx.send(f"\u274c AI commands can only be used in the #{ai_channel_name} channel.")
         return False
+
+    async def lookup_wow_token(self) -> str:
+        """
+        Get the current WoW Token price in gold for all major regions (US, EU, KR, TW).
+        Use this tool whenever a user asks for the WoW Token price.
+        """
+        logger.info("Tool Call: lookup_wow_token()")
+        wow_cog = self.bot.get_cog("WoW")
+        if not wow_cog:
+            return "WoW tools are currently unavailable."
+        return await wow_cog.get_wow_token_prices(self._session)
 
     async def lookup_wow_character(self, name: str, realm: Optional[str] = None) -> str:
         """
@@ -163,7 +175,7 @@ class AIChat(commands.Cog):
         return chunks
 
     async def _call_gemini(self, prompt: str, user_id: Optional[int] = None, image_parts: Optional[list] = None) -> str:
-        """Call the Gemini API with fallback logic and combined tools."""
+        """Call the Gemini API with fallback logic and dynamic tool selection."""
         # Check cache first if no user_id (not a chat context)
         if not user_id:
             cache_key = prompt.strip().lower()
@@ -172,6 +184,15 @@ class AIChat(commands.Cog):
                 val = self.cache.pop(cache_key)
                 self.cache[cache_key] = val
                 return val
+
+        # Determine tool priority based on keywords
+        p_lower = prompt.lower()
+        # WoW config now handles both character lookups AND token prices
+        is_wow = any(k in p_lower for k in ["wow", "character", "realm", "level", "stats", "gear", "guild", "token", "price"])
+        
+        # Decide which config to try first
+        primary_config = self.wow_config if is_wow else self.search_config
+        secondary_config = self.search_config if is_wow else self.wow_config
 
         # Build contents array with history
         history = self.chat_histories.get(user_id, []) if user_id else []
@@ -185,43 +206,47 @@ class AIChat(commands.Cog):
 
         # Try models in order
         for i, model_name in enumerate(self.models):
-            logger.debug("Prompting %s with combined tools: %s", model_name, prompt)
-            try:
-                response = await self.client.aio.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=self.combined_config
-                )
-                
-                if not response.text:
-                    continue
-                
-                if user_id:
-                    history.append({"role": "user", "parts": [{"text": prompt}]})
-                    history.append({"role": "model", "parts": [{"text": response.text}]})
-                    if len(history) > self.history_max_length:
-                        history = history[-self.history_max_length:]
-                    self.chat_histories[user_id] = history
-                else:
-                    self.cache[cache_key] = response.text
-                    if len(self.cache) > self.cache_max_size:
-                        self.cache.popitem(last=False)
+            for config_to_use in [primary_config, secondary_config]:
+                logger.debug("Prompting %s with %s tools: %s", model_name, "WoW" if config_to_use == self.wow_config else "Search", prompt)
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=config_to_use
+                    )
                     
-                return response.text
+                    if not response.text:
+                        continue
+                    
+                    if user_id:
+                        history.append({"role": "user", "parts": [{"text": prompt}]})
+                        history.append({"role": "model", "parts": [{"text": response.text}]})
+                        if len(history) > self.history_max_length:
+                            history = history[-self.history_max_length:]
+                        self.chat_histories[user_id] = history
+                    else:
+                        self.cache[cache_key] = response.text
+                        if len(self.cache) > self.cache_max_size:
+                            self.cache.popitem(last=False)
+                        
+                    return response.text
 
-            except Exception as e:
-                err_msg = str(e).upper()
-                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
-                    logger.warning("%s quota exhausted. Waiting 2s...", model_name)
-                    await asyncio.sleep(2)
-                    continue # Try next model
-                
-                if i == len(self.models) - 1:
-                    logger.exception("Final error calling %s", model_name)
-                    raise APIError(str(e))
-                
-                logger.warning("Error calling %s: %s", model_name, e)
-                continue 
+                except Exception as e:
+                    err_msg = str(e).upper()
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
+                        logger.warning("%s quota exhausted. Waiting 2s...", model_name)
+                        await asyncio.sleep(2)
+                        break # Try next model
+                    
+                    if "400" in err_msg and "CANNOT BE COMBINED" in err_msg:
+                        continue # Try the other config for this same model
+                    
+                    if i == len(self.models) - 1 and config_to_use == secondary_config:
+                        logger.exception("Final error calling %s", model_name)
+                        raise APIError(str(e))
+                    
+                    logger.warning("Error calling %s with %s tools: %s", model_name, "WoW" if config_to_use == self.wow_config else "Search", e)
+                    continue 
         
         return "I'm sorry, I couldn't generate a response."
 
