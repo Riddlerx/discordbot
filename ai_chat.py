@@ -162,7 +162,7 @@ class AIChat(commands.Cog):
         return chunks
 
     async def _call_gemini(self, prompt: str, user_id: Optional[int] = None, image_parts: Optional[list] = None) -> str:
-        """Call the Gemini API with fallback logic and dynamic tool selection."""
+        """Call the Gemini API with fallback logic and combined tools."""
         # Check cache first if no user_id (not a chat context)
         if not user_id:
             cache_key = prompt.strip().lower()
@@ -171,15 +171,6 @@ class AIChat(commands.Cog):
                 val = self.cache.pop(cache_key)
                 self.cache[cache_key] = val
                 return val
-
-        # Determine priority based on keywords
-        p_lower = prompt.lower()
-        is_wow = any(k in p_lower for k in ["wow", "character", "realm", "level", "stats", "gear", "guild"])
-        is_rt = any(k in p_lower for k in ["weather", "news", "price", "who won", "today", "current"])
-
-        # Decide which config to try first
-        primary_config = self.wow_config if is_wow else self.search_config
-        secondary_config = self.search_config if is_wow else self.wow_config
 
         # Build contents array with history
         history = self.chat_histories.get(user_id, []) if user_id else []
@@ -193,47 +184,43 @@ class AIChat(commands.Cog):
 
         # Try models in order
         for i, model_name in enumerate(self.models):
-            for config_to_use in [primary_config, secondary_config]:
-                logger.debug("Prompting %s with %s: %s", model_name, "WoW" if config_to_use == self.wow_config else "Search", prompt)
-                try:
-                    response = await self.client.aio.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=config_to_use
-                    )
+            logger.debug("Prompting %s with combined tools: %s", model_name, prompt)
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=self.combined_config
+                )
+                
+                if not response.text:
+                    continue
+                
+                if user_id:
+                    history.append({"role": "user", "parts": [{"text": prompt}]})
+                    history.append({"role": "model", "parts": [{"text": response.text}]})
+                    if len(history) > self.history_max_length:
+                        history = history[-self.history_max_length:]
+                    self.chat_histories[user_id] = history
+                else:
+                    self.cache[cache_key] = response.text
+                    if len(self.cache) > self.cache_max_size:
+                        self.cache.popitem(last=False)
                     
-                    if not response.text:
-                        continue
-                    
-                    if user_id:
-                        history.append({"role": "user", "parts": [{"text": prompt}]})
-                        history.append({"role": "model", "parts": [{"text": response.text}]})
-                        if len(history) > self.history_max_length:
-                            history = history[-self.history_max_length:]
-                        self.chat_histories[user_id] = history
-                    else:
-                        self.cache[cache_key] = response.text
-                        if len(self.cache) > self.cache_max_size:
-                            self.cache.popitem(last=False)
-                        
-                    return response.text
+                return response.text
 
-                except Exception as e:
-                    err_msg = str(e).upper()
-                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
-                        logger.warning("%s quota exhausted. Waiting 2s...", model_name)
-                        await asyncio.sleep(2)
-                        break # Try next model
-                    
-                    if "400" in err_msg and "CANNOT BE COMBINED" in err_msg:
-                        continue # Try the other config for this same model
-                    
-                    if i == len(self.models) - 1 and config_to_use == secondary_config:
-                        logger.exception("Final error calling %s", model_name)
-                        raise APIError(str(e))
-                    
-                    logger.warning("Error calling %s with tool: %s", model_name, e)
-                    continue 
+            except Exception as e:
+                err_msg = str(e).upper()
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
+                    logger.warning("%s quota exhausted. Waiting 2s...", model_name)
+                    await asyncio.sleep(2)
+                    continue # Try next model
+                
+                if i == len(self.models) - 1:
+                    logger.exception("Final error calling %s", model_name)
+                    raise APIError(str(e))
+                
+                logger.warning("Error calling %s: %s", model_name, e)
+                continue 
         
         return "I'm sorry, I couldn't generate a response."
 
@@ -477,6 +464,36 @@ class AIChat(commands.Cog):
                 if vc.is_playing() or vc.is_paused():
                     await music_cog.play(ctx, search=output_file)
                     await ctx.message.add_reaction("🗣️")
+                else:
+                    def after_playing(error):
+                        if error: logger.error("Error playing TTS: %s", error)
+                        if os.path.exists(output_file):
+                            try: os.remove(output_file)
+                            except: pass
+
+                    # Add reconnect options for extra stability
+                    ffmpeg_opts = "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2"
+                    source = await discord.FFmpegOpusAudio.from_probe(output_file, options=ffmpeg_opts)
+                    vc.play(source, after=after_playing)
+                    await ctx.message.add_reaction("🗣️")
+
+            except Exception as e:
+                logger.exception("Error in !say")
+                await ctx.send(f"⚠️ Failed to generate voice: {e}")
+                if 'output_file' in locals() and os.path.exists(output_file):
+                    try: os.remove(output_file)
+                    except Exception:
+                        pass
+
+
+
+class APIError(Exception):
+    pass
+
+
+async def setup(bot):
+    await bot.add_cog(AIChat(bot))
+.add_reaction("🗣️")
                 else:
                     def after_playing(error):
                         if error: logger.error("Error playing TTS: %s", error)

@@ -397,8 +397,9 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     return info, path
                 return info, info["url"]
 
-            def fallback_search() -> tuple[dict, str]:
-                search_info = extract_with_options(f"ytsearch5:{search_query}", should_download=False, playlist_items="1:5")
+            def fallback_search(custom_query: str = None) -> tuple[dict, str]:
+                target_query = custom_query or search_query
+                search_info = extract_with_options(f"ytsearch5:{target_query}", should_download=False, playlist_items="1:5")
                 info = first_playable_video(search_info.get("entries") if search_info else None)
                 if not info:
                     raise Exception("No playable video results found.")
@@ -430,10 +431,26 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 except Exception as exc:
                     if is_url_query(query):
                         raise
+                    
+                    err_msg = str(exc)
+                    if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
+                        retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
+                        logger.info("Age restriction detected for %r. Retrying with: %r", query, retry_query)
+                        return fallback_search(custom_query=retry_query)
+
                     logger.warning("First yt-dlp result was not playable, retrying broader search query=%r: %s", query, exc)
                     return fallback_search()
             except yt_dlp.utils.DownloadError as exc:
                 err_msg = str(exc)
+                if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
+                    if not is_url_query(query):
+                        retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
+                        logger.info("Age restriction detected (DownloadError) for %r. Retrying with: %r", query, retry_query)
+                        try:
+                            return fallback_search(custom_query=retry_query)
+                        except Exception:
+                            pass # fall through to the original error if fallback also fails
+
                 if "[DRM]" in err_msg or "DRM protected" in err_msg:
                     raise Exception("This content is DRM protected and cannot be played directly. Try searching for the song name instead.") from exc
                 raise

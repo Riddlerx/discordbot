@@ -339,8 +339,9 @@ class Music(commands.Cog):
         # Output options:
         # -vn           : discard video, audio only
         # -loglevel     : suppress verbose FFmpeg output
+        # -threads 1    : limit CPU usage on shared/free-tier VMs (e.g. GCP e2-micro)
         # Volume is applied using the volume filter.
-        ffmpeg_options = f"-vn -loglevel warning -af volume={volume}"
+        ffmpeg_options = f"-vn -loglevel warning -threads 1 -af volume={volume}"
 
         logger.debug("Creating audio source path=%s before_options=%r", audio_path, before_options)
 
@@ -355,9 +356,9 @@ class Music(commands.Cog):
                 audio_path,
                 before_options=before_options_str,
                 options=ffmpeg_options,
-                # 96kbps: perceptually transparent for Discord voice, uses half
-                # the uplink bandwidth of 128kbps — important on GCP free tier
-                bitrate=96,
+                # 64kbps: optimal balance for high-latency cross-Pacific links and 
+                # low-power VMs. Still high quality but much more stable.
+                bitrate=64,
             )
         except Exception as exc:
             logger.warning("FFmpegOpusAudio failed for path=%s; falling back to PCMAudio: %s", audio_path, exc)
