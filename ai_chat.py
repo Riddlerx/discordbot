@@ -43,24 +43,25 @@ class AIChat(commands.Cog):
                     "You are a helpful, friendly, and slightly witty AI assistant in a Discord server. "
                     "Your personality is engaging and helpful. Use Discord markdown formatting effectively. "
                     "When asked about a World of Warcraft (WoW) character, player, or stats, "
-                    "you MUST use the 'lookup_wow_character' tool immediately. "
-                    "For real-time information like weather, news, or current events, use the Google Search tool. "
-                    "Do NOT tell the user you are going to search; just use the tools and wait for results. "
+                    "you MUST use the 'lookup_wow_character' tool. If the data shows they are undergeared "
+                    "or have low progress, feel free to give them a friendly, witty roast or tease them about it. "
+                    "For real-time information like weather, news, current events, or WoW Token prices, use the Google Search tool. "
+                    "You can use both tools if needed. Do NOT tell the user you are going to search; just use the tools and wait for results. "
                     "Provide a detailed and engaging final answer based on the tools' output. "
                     "Respond in the same language as the user."
                 ),
-                "temperature": 0.7,
+                "temperature": 0.8,
                 "max_output_tokens": 4096,
             }
-            self.wow_config = types.GenerateContentConfig(
+            # Combined config: Always provide both tools to prevent "mode switching" errors
+            self.combined_config = types.GenerateContentConfig(
                 **self.common_config,
-                tools=[self.lookup_wow_character]
+                tools=[
+                    self.lookup_wow_character,
+                    types.Tool(google_search=types.GoogleSearch())
+                ]
             )
-            self.search_config = types.GenerateContentConfig(
-                **self.common_config,
-                tools=[types.Tool(google_search=types.GoogleSearch())]
-            )
-            logger.info("Gemini AI configured with fallback chain: %s", ", ".join(self.models))
+            logger.info("Gemini AI configured with combined tools across fallback models.")
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
@@ -485,41 +486,8 @@ class AIChat(commands.Cog):
                     except Exception:
                         pass
 
-
-
 class APIError(Exception):
     pass
-
-
-async def setup(bot):
-    await bot.add_cog(AIChat(bot))
-.add_reaction("🗣️")
-                else:
-                    def after_playing(error):
-                        if error: logger.error("Error playing TTS: %s", error)
-                        if os.path.exists(output_file):
-                            try: os.remove(output_file)
-                            except: pass
-
-                    # Add reconnect options for extra stability
-                    ffmpeg_opts = "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2"
-                    source = await discord.FFmpegOpusAudio.from_probe(output_file, options=ffmpeg_opts)
-                    vc.play(source, after=after_playing)
-                    await ctx.message.add_reaction("🗣️")
-
-            except Exception as e:
-                logger.exception("Error in !say")
-                await ctx.send(f"⚠️ Failed to generate voice: {e}")
-                if 'output_file' in locals() and os.path.exists(output_file):
-                    try: os.remove(output_file)
-                    except Exception:
-                        pass
-
-
-
-class APIError(Exception):
-    pass
-
 
 async def setup(bot):
     await bot.add_cog(AIChat(bot))
