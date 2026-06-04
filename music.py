@@ -187,8 +187,8 @@ class Music(commands.Cog):
         return guild.get_channel(st.last_text_channel_id)
 
     def _non_bot_voice_user_ids(self, voice_channel) -> list[int]:
-        bot_user_id = self.bot.user.id if self.bot.user else None
-        return [user_id for user_id in voice_channel.voice_states.keys() if user_id != bot_user_id]
+        """Return IDs of all non-bot users currently in the voice channel."""
+        return [member.id for member in voice_channel.members if not member.bot]
 
     def _cancel_empty_disconnect(self, st: GuildState):
         if st.empty_disconnect_task and not st.empty_disconnect_task.done():
