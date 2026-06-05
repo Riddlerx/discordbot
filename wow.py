@@ -769,7 +769,7 @@ class WoW(commands.Cog):
                         
                         if par_time_ms > 0:
                             efficiency = clear_time_ms / par_time_ms
-                            if efficiency <= 0.90:
+                            if efficiency <= 0.80:
                                 new_runs.append(completed_at)
                                 logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{run.get('mythic_level')} in {clear_time_ms/60000:.1f}m ({efficiency:.1%} of timer)")
                             else:
@@ -988,11 +988,12 @@ class WoW(commands.Cog):
                 title="🚀 Booster Run Tracking",
                 description=(
                     "Track the number of 'Boosting Runs' completed each week.\n"
-                    "A boost is defined as a **Mythic 8+** cleared in **< 90%** of the timer.\n\n"
+                    "A boost is defined as a **Mythic 8+** cleared in **< 80%** of the timer.\n\n"
                     "**Commands:**\n"
                     "`!booster register name-realm` - Start tracking a character\n"
                     "`!booster unregister name-realm` - Stop tracking a character\n"
-                    "`!booster stats [@user]` - View current weekly run count"
+                    "`!booster stats [@user]` - View current weekly run count\n"
+                    "`!booster adjust name-realm <amount>` - Manual count correction (Mod only)"
                 ),
                 color=discord.Color.blue()
             )
@@ -1148,6 +1149,26 @@ class WoW(commands.Cog):
                     embed.description = "No boosting runs completed this week yet."
                 
             await ctx.send(embed=embed)
+
+    @booster.command(name="adjust")
+    @commands.has_permissions(manage_guild=True)
+    async def booster_adjust(self, ctx, char_query: str, amount: int):
+        """Add or subtract from a character's weekly count (e.g. -5 to fix farm runs)."""
+        name, realm = self._parse_char_query(char_query)
+        
+        found = False
+        for t in self.booster_config:
+            if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                t["weekly_count"] = max(0, t.get("weekly_count", 0) + amount)
+                found = True
+                break
+        
+        if found:
+            await self.save_state()
+            action = "Added" if amount > 0 else "Removed"
+            await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{name}-{realm}**. New total: **{t['weekly_count']}**.")
+        else:
+            await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
 
 
 async def setup(bot):
