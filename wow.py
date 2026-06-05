@@ -759,23 +759,42 @@ class WoW(commands.Cog):
             recent_runs = data.get("mythic_plus_recent_runs", [])
             new_runs = []
             for run in recent_runs:
-                # Track runs that are Mythic 8+
-                if run.get("mythic_level", 0) >= 8:
+                # Track runs that are Mythic 10+ (Midnight Expansion)
+                level = run.get("mythic_level", 0)
+                if level >= 10:
                     completed_at = run.get("completed_at")
                     if completed_at and completed_at > last_run_at:
-                        # Use par_time_ms from API if available
-                        clear_time_ms = run.get("clear_time_ms", 0)
-                        par_time_ms = run.get("par_time_ms", 0)
+                        roster = run.get("roster", [])
                         
-                        if par_time_ms > 0:
-                            efficiency = clear_time_ms / par_time_ms
-                            if efficiency <= 0.80:
-                                new_runs.append(completed_at)
-                                logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{run.get('mythic_level')} in {clear_time_ms/60000:.1f}m ({efficiency:.1%} of timer)")
-                            else:
-                                logger.info(f"Regular run: {name} cleared {run.get('dungeon')} +{run.get('mythic_level')} in {clear_time_ms/60000:.1f}m ({efficiency:.1%} of timer)")
+                        # 1. Role Check: Multiple tanks or healers indicate a carry
+                        tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                        healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                        
+                        # 2. Buyer Check: Any player below 266 ilvl is being carried
+                        buyer_found = any(m.get("character", {}).get("item_level", 0) < 266 for m in roster)
+                        
+                        is_boost = False
+                        reason = ""
+
+                        if buyer_found:
+                            is_boost = True
+                            reason = "Buyer detected (<266 ilvl)"
+                        elif tanks > 1 or healers > 1:
+                            is_boost = True
+                            reason = f"Role mismatch ({tanks}T/{healers}H)"
                         else:
-                            logger.warning(f"No par time for {run.get('dungeon')} on {name}")
+                            # 3. Efficiency Check: Standard groups must beat 75% of timer
+                            clear_time_ms = run.get("clear_time_ms", 0)
+                            par_time_ms = run.get("par_time_ms", 0)
+                            if par_time_ms > 0:
+                                efficiency = clear_time_ms / par_time_ms
+                                if efficiency <= 0.75:
+                                    is_boost = True
+                                    reason = f"Fast clear ({efficiency:.1%})"
+                        
+                        if is_boost:
+                            new_runs.append(completed_at)
+                            logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
 
             if new_runs:
                 count = len(new_runs)
@@ -788,7 +807,7 @@ class WoW(commands.Cog):
         return False
 
     async def booster_auto_tracker(self):
-        """Periodically poll Raider.io for new Mythic 8+ runs for registered boosters."""
+        """Periodically poll Raider.io for new Mythic 10+ runs for registered boosters."""
         await self.bot.wait_until_ready()
         async with aiohttp.ClientSession() as session:
             while not self.bot.is_closed():
@@ -982,18 +1001,21 @@ class WoW(commands.Cog):
 
     @commands.group(name="booster", invoke_without_command=True)
     async def booster(self, ctx):
-        """Weekly booster tracking (Fast Mythic 8+)."""
+        """Weekly booster tracking (Midnight 10+)."""
         if ctx.invoked_subcommand is None:
             embed = discord.Embed(
-                title="🚀 Booster Run Tracking",
+                title="🚀 Booster Run Tracking (Midnight 12.0.5)",
                 description=(
                     "Track the number of 'Boosting Runs' completed each week.\n"
-                    "A boost is defined as a **Mythic 8+** cleared in **< 80%** of the timer.\n\n"
+                    "A boost is flagged if:\n"
+                    "• **Level:** Mythic 10 or higher\n"
+                    "• **Buyer:** Any player is < 266 ilvl\n"
+                    "• **Roles:** > 1 Tank or > 1 Healer\n"
+                    "• **Time:** Standard group clears in < 75% of timer\n\n"
                     "**Commands:**\n"
-                    "`!booster register name-realm` - Start tracking a character\n"
-                    "`!booster unregister name-realm` - Stop tracking a character\n"
-                    "`!booster stats [@user]` - View current weekly run count\n"
-                    "`!booster adjust name-realm <amount>` - Manual count correction (Mod only)"
+                    "`!booster register name-realm` - Start tracking\n"
+                    "`!booster stats` - View weekly counts\n"
+                    "`!booster adjust name-realm <amount>` - Manual fix (Mod only)"
                 ),
                 color=discord.Color.blue()
             )
@@ -1001,7 +1023,7 @@ class WoW(commands.Cog):
 
     @booster.command(name="register")
     async def booster_register(self, ctx, *, char_query: str):
-        """Register a character for weekly 8+ run tracking."""
+        """Register a character for weekly 10+ run tracking."""
         name, realm = self._parse_char_query(char_query)
 
         async with ctx.typing():
