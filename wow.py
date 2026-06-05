@@ -770,15 +770,15 @@ class WoW(commands.Cog):
                         tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                         healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
                         
-                        # 2. Buyer Check: Any player below 266 ilvl is being carried
-                        buyer_found = any(m.get("character", {}).get("item_level", 0) < 266 for m in roster)
+                        # 2. Buyer Check: Any player below 275 ilvl is being carried
+                        buyer_found = any(m.get("character", {}).get("item_level", 0) < 275 for m in roster)
                         
                         is_boost = False
                         reason = ""
 
                         if buyer_found:
                             is_boost = True
-                            reason = "Buyer detected (<266 ilvl)"
+                            reason = "Buyer detected (<275 ilvl)"
                         elif tanks > 1 or healers > 1:
                             is_boost = True
                             reason = f"Role mismatch ({tanks}T/{healers}H)"
@@ -1009,7 +1009,7 @@ class WoW(commands.Cog):
                     "Track the number of 'Boosting Runs' completed each week.\n"
                     "A boost is flagged if:\n"
                     "• **Level:** Mythic 10 or higher\n"
-                    "• **Buyer:** Any player is < 266 ilvl\n"
+                    "• **Buyer:** Any player is < 275 ilvl\n"
                     "• **Roles:** > 1 Tank or > 1 Healer\n"
                     "• **Time:** Standard group clears in < 75% of timer\n\n"
                     "**Commands:**\n"
