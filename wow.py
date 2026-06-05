@@ -1152,23 +1152,36 @@ class WoW(commands.Cog):
 
     @booster.command(name="adjust")
     @commands.has_permissions(manage_guild=True)
-    async def booster_adjust(self, ctx, char_query: str, amount: int):
-        """Add or subtract from a character's weekly count (e.g. -5 to fix farm runs)."""
+    async def booster_adjust(self, ctx, *, args: str):
+        """Add or subtract from a character's weekly count (e.g. !booster adjust Eaindwin-Area 52 -5)."""
+        parts = args.rsplit(None, 1)
+        if len(parts) < 2:
+            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster adjust <name-realm> <amount>`")
+            
+        char_query, amount_str = parts[0], parts[1]
+        try:
+            amount = int(amount_str)
+        except ValueError:
+            return await ctx.send("⚠️ Amount must be a number (e.g., -5 or 2).")
+
         name, realm = self._parse_char_query(char_query)
         
-        found = False
+        def norm(r): return r.lower().replace(" ", "").replace("-", "").replace("'", "")
+        
+        target_norm = norm(realm)
+        found_tracker = None
         for t in self.booster_config:
-            if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+            if t["name"].lower() == name.lower() and norm(t["realm"]) == target_norm:
                 t["weekly_count"] = max(0, t.get("weekly_count", 0) + amount)
-                found = True
+                found_tracker = t
                 break
         
-        if found:
+        if found_tracker:
             await self.save_state()
             action = "Added" if amount > 0 else "Removed"
-            await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{name}-{realm}**. New total: **{t['weekly_count']}**.")
+            await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{found_tracker['name']}-{found_tracker['realm']}**. New total: **{found_tracker['weekly_count']}**.")
         else:
-            await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
+            await ctx.send(f"❌ **{char_query}** is not being tracked. Check the name and realm.")
 
 
 async def setup(bot):
