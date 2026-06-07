@@ -1336,21 +1336,17 @@ class WoW(commands.Cog):
                 logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
 
                 if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
-                    # Only add this run if it was NOT already counted by the old logic.
-                    # The old logic counted runs IF: (tanks > 1 or healers > 1 or efficiency <= 0.75)
-                    # So we only add if buyer_found is the ONLY reason, OR if it's a totally new run not in counted_runs.
-                    
+                    # Mark as counted regardless of whether it was caught by old logic or new logic
+                    if run_id not in tracker["counted_runs"]:
+                        tracker["counted_runs"].append(run_id)
+                        
+                    # Only increment count if it's a NEW detection
                     was_flagged_by_old_logic = (tanks > 1 or healers > 1 or efficiency <= 0.75)
-                    
                     if not was_flagged_by_old_logic:
                         added_count += 1
-                        tracker["counted_runs"].append(run_id)
                         logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')}")
                     else:
-                        # It was already counted by the old logic, so just make sure it's in the ID list
-                        # so the automatic scanner doesn't pick it up again later.
-                        if run_id not in tracker["counted_runs"]:
-                            tracker["counted_runs"].append(run_id)
+                        logger.info(f"Deep Scan: Run {run_id} already accounted for.")
 
             if added_count > 0:
                 tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
