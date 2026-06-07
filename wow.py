@@ -184,7 +184,10 @@ class WoW(commands.Cog):
                             logger.warning("Rate limited (429), waiting %.1fs", wait_time)
                             await asyncio.sleep(wait_time)
                         else:
-                            logger.warning(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
+                            if response.status == 500:
+                                logger.debug(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
+                            else:
+                                logger.warning(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
                             if attempt < retries:
                                 await asyncio.sleep(delay)
             except Exception as e:
@@ -1218,9 +1221,17 @@ class WoW(commands.Cog):
         else:
             await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
 
+    @booster.command(name="clear_cache")
+    @commands.has_permissions(manage_guild=True)
+    async def booster_clear_cache(self, ctx):
+        """Clear the run details cache to force re-evaluation of runs."""
+        self._run_details_cache = {}
+        await ctx.send("✅ Cleared run details cache. You can now run `!booster deep_scan` again.")
+
     @booster.command(name="deep_scan")
     async def booster_deep_scan(self, ctx, *, char_query: str):
         """Manually re-evaluate the last 10 runs for a character and add any missed boosts."""
+        self._run_details_cache = {}
         name, realm = self._parse_char_query(char_query)
         
         async with ctx.typing():
