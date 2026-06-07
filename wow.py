@@ -1330,7 +1330,10 @@ class WoW(commands.Cog):
                 lines = []
                 for f_name, data in sorted_friends:
                     if data["total"] > 0:
-                        lines.append(f"• **{f_name}**: {data['total']} runs ({', '.join(data['chars'])})")
+                        display = f"• **{f_name}**: {data['total']} runs"
+                        if data["chars"]:
+                            display += f" ({', '.join(data['chars'])})"
+                        lines.append(display)
 
                 if lines:
                     embed.description = "\n".join(lines)
