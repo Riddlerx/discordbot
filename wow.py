@@ -771,6 +771,12 @@ class WoW(commands.Cog):
                         healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
                         
                         # 2. Buyer Check: Any player below 275 ilvl is being carried
+                        for m in roster:
+                            char_data = m.get("character", {})
+                            ilvl = char_data.get("item_level", 0)
+                            if ilvl == 0:
+                                logger.debug(f"DEBUG: Member {char_data.get('name', 'unknown')} has ilvl 0. Full member data: {m}")
+                        
                         buyer_found = any(m.get("character", {}).get("item_level", 0) < 275 for m in roster)
                         
                         is_boost = False
