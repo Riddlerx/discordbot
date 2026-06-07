@@ -186,17 +186,19 @@ class WoW(commands.Cog):
                             await asyncio.sleep(wait_time)
                         else:
                             if response.status == 500:
-                                logger.debug(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
+                                wait_time = delay * (2 ** attempt) + random.uniform(1, 3)
+                                logger.debug(f"HTTP 500 on attempt {attempt}/{retries}, waiting {wait_time:.1f}s: {url}")
+                                await asyncio.sleep(wait_time)
                             else:
                                 logger.warning(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
-                            if attempt < retries:
-                                await asyncio.sleep(delay)
+                                if attempt < retries:
+                                    await asyncio.sleep(delay)
             except Exception as e:
                 logger.warning(f"Request error on attempt {attempt}/{retries}: {e} — {url}")
                 if attempt == retries:
                     logger.error(f"Request failed after {retries} attempts: {e}")
-            if attempt < retries:
-                await asyncio.sleep(delay)
+                elif attempt < retries:
+                    await asyncio.sleep(delay)
         return None
 
     async def get_access_token(self, session: aiohttp.ClientSession) -> Optional[str]:
