@@ -75,6 +75,7 @@ class WoW(commands.Cog):
     async def cog_load(self):
         # Shared session avoids per-command TCP handshakes and DNS lookups
         self._session = aiohttp.ClientSession()
+        self._run_details_cache = {} # Force re-evaluation on restart
         await self.load_state()
 
     async def cog_unload(self):
@@ -838,9 +839,11 @@ class WoW(commands.Cog):
                         efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
 
                         is_boost = False
+                        is_definitive = False # True if we successfully checked the details
                         reason = ""
 
                         if run_details:
+                            is_definitive = True
                             roster = run_details.get("roster", [])
                             # Role Check: Multiple tanks or healers indicate a carry
                             tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
@@ -864,6 +867,10 @@ class WoW(commands.Cog):
                             if efficiency <= 0.75:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
+                            else:
+                                # DO NOT mark as definitive boost/non-boost, do not add to counted_runs
+                                logger.warning(f"  -> Skipping definitive check for {run.get('dungeon')} +{level} due to API error (will retry)")
+                                continue
                         
                         if is_boost:
                             new_runs.append(completed_at)
@@ -873,6 +880,8 @@ class WoW(commands.Cog):
                                 tracker["counted_runs"] = tracker["counted_runs"][-100:]
                             logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
                         else:
+                            # Only add to counted_runs if we were able to definitively check
+                            tracker["counted_runs"].append(run_id)
                             logger.info(f"  -> Not a boost: {run.get('dungeon')} +{level} | Eff: {efficiency:.1%}")
 
             # Advance last_run_at past ALL seen runs (not just boosts), so they
