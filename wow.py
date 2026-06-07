@@ -138,12 +138,18 @@ class WoW(commands.Cog):
                         if response.status == 200:
                             return await response.json()
                         elif response.status in [400, 404]:
+                            logger.debug(f"HTTP {response.status} for {url}")
                             return None
                         elif response.status == 429:
                             wait_time = delay * 5 + random.uniform(1, 5)
-                            logger.warning("Rate limited, waiting %.1fs", wait_time)
+                            logger.warning("Rate limited (429), waiting %.1fs", wait_time)
                             await asyncio.sleep(wait_time)
+                        else:
+                            logger.warning(f"HTTP {response.status} on attempt {attempt}/{retries}: {url}")
+                            if attempt < retries:
+                                await asyncio.sleep(delay)
             except Exception as e:
+                logger.warning(f"Request error on attempt {attempt}/{retries}: {e} — {url}")
                 if attempt == retries:
                     logger.error(f"Request failed after {retries} attempts: {e}")
             if attempt < retries:
@@ -1218,7 +1224,7 @@ class WoW(commands.Cog):
                 logger.info(f"  -> Fetching details: {details_url}")
                 run_details = await self.safe_get(self._session, details_url)
                 if not run_details:
-                    logger.info("  -> Skipping: could not fetch run details")
+                    logger.warning("  -> Skipping run %s: raider.io returned no data (likely HTTP 500 — server-side issue)", run_id)
                     continue
                 
                 roster = run_details.get("roster", [])
