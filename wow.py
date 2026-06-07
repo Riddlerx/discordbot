@@ -802,21 +802,28 @@ class WoW(commands.Cog):
                 return False
 
             recent_runs = data.get("mythic_plus_recent_runs", [])
-            new_runs = []
+            new_runs = []       # completed_at of confirmed boosts
+            all_completed = []  # completed_at of ALL qualifying runs seen (to advance last_run_at)
+
+            # Ensure counted_runs exists once, before the loop
+            if "counted_runs" not in tracker:
+                tracker["counted_runs"] = []
+
             for run in recent_runs:
                 # Track runs that are Mythic 10+ (Midnight Expansion)
                 level = run.get("mythic_level", 0)
                 if level >= 10:
                     completed_at = run.get("completed_at")
                     if completed_at and completed_at > last_run_at:
-            # NEW: Need to fetch run details to get the roster with item levels
                         run_id = run.get("keystone_run_id")
                         if not run_id:
                             continue
-                        
-                        # Prevent double counting
-                        if "counted_runs" not in tracker:
-                            tracker["counted_runs"] = []
+
+                        # Always track that we've seen this run, even if it's not a boost.
+                        # This advances last_run_at so we don't re-evaluate it next hour.
+                        all_completed.append(completed_at)
+
+                        # Prevent double counting boosts
                         if run_id in tracker["counted_runs"]:
                             continue
                             
@@ -862,6 +869,13 @@ class WoW(commands.Cog):
                             if len(tracker["counted_runs"]) > 100:
                                 tracker["counted_runs"] = tracker["counted_runs"][-100:]
                             logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
+                        else:
+                            logger.info(f"  -> Not a boost: {run.get('dungeon')} +{level} | Eff: {efficiency:.1%}")
+
+            # Advance last_run_at past ALL seen runs (not just boosts), so they
+            # aren't re-evaluated on the next hourly cycle.
+            if all_completed:
+                tracker["last_run_at"] = max(all_completed)
 
             if new_runs:
                 count = len(new_runs)
