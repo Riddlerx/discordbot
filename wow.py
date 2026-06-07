@@ -68,6 +68,9 @@ class WoW(commands.Cog):
         # Cache run-details per session to avoid hammering a broken endpoint with the same IDs.
         # Maps run_id -> dict (successful data) or run_id -> None (confirmed unavailable).
         self._run_details_cache: Dict[int, Optional[Dict]] = {}
+        # In-flight deduplication: if two coroutines ask for the same run_id concurrently,
+        # only one HTTP request is made; the second awaits the first's Future.
+        self._run_details_inflight: Dict[int, asyncio.Future] = {}
 
     async def cog_load(self):
         # Shared session avoids per-command TCP handshakes and DNS lookups
@@ -132,16 +135,37 @@ class WoW(commands.Cog):
             await asyncio.to_thread(self._write_state_file, state)
 
     async def get_run_details(self, session: aiohttp.ClientSession, run_id: int) -> Optional[Dict]:
-        """Fetch run details with an in-memory cache to avoid duplicate requests.
-        Returns None when raider.io returns 500 or any error (cached so it won't retry).
+        """Fetch run details with caching and in-flight deduplication.
+
+        - If the result is already cached (including a cached None for 500s), return immediately.
+        - If another coroutine is already fetching the same run_id, await its result instead
+          of making a duplicate HTTP request (fixes concurrent scan_booster + deep_scan races).
+        - Caches None for failed requests so they are never retried in the same session.
         """
+        # 1. Already have the result.
         if run_id in self._run_details_cache:
             return self._run_details_cache[run_id]
-        url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
-        logger.info(f"  -> Fetching details: {url}")
-        result = await self.safe_get(session, url)
-        self._run_details_cache[run_id] = result  # cache None too, to suppress retries
-        return result
+
+        # 2. Another coroutine is fetching right now — piggyback on it.
+        if run_id in self._run_details_inflight:
+            return await asyncio.shield(self._run_details_inflight[run_id])
+
+        # 3. We are the first — create a Future so others can wait on us.
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._run_details_inflight[run_id] = future
+        try:
+            url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+            logger.info(f"  -> Fetching details: {url}")
+            result = await self.safe_get(session, url)
+            self._run_details_cache[run_id] = result  # cache None too — no retries
+            future.set_result(result)
+            return result
+        except Exception as exc:
+            future.set_exception(exc)
+            raise
+        finally:
+            self._run_details_inflight.pop(run_id, None)
 
     async def safe_get(self, session: aiohttp.ClientSession, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, retries: int = 3, delay: int = 1) -> Optional[Dict]:
         """Get JSON data safely with retries and error handling."""
