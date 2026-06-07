@@ -1197,24 +1197,29 @@ class WoW(commands.Cog):
                     logger.info("  -> Skipping: before reset")
                     continue
                 
-                # If this run was already processed by the NEW logic (after my update),
-                # it would be <= tracker['last_run_at']. We only want to re-check runs
-                # that were potentially missed by the OLD logic.
-                
                 level = run.get("mythic_level", 0)
-                if level >= 10:
-                    run_id = run.get("keystone_run_id")
-                    if not run_id: continue
+                if level < 10:
+                    logger.info(f"  -> Skipping: level {level} is below 10")
+                    continue
                     
-                    # Prevent double counting
-                    if "counted_runs" not in tracker:
-                        tracker["counted_runs"] = []
-                    if run_id in tracker["counted_runs"]:
-                        continue
+                run_id = run.get("keystone_run_id")
+                if not run_id:
+                    logger.info("  -> Skipping: no run_id")
+                    continue
+                
+                # Prevent double counting
+                if "counted_runs" not in tracker:
+                    tracker["counted_runs"] = []
+                if run_id in tracker["counted_runs"]:
+                    logger.info(f"  -> Skipping: run {run_id} already counted")
+                    continue
 
-                    details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
-                    run_details = await self.safe_get(self._session, details_url)
-                    if not run_details: continue
+                details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+                logger.info(f"  -> Fetching details: {details_url}")
+                run_details = await self.safe_get(self._session, details_url)
+                if not run_details:
+                    logger.info("  -> Skipping: could not fetch run details")
+                    continue
                     
                     roster = run_details.get("roster", [])
                     roster_debug = []
