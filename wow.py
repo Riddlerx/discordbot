@@ -65,6 +65,9 @@ class WoW(commands.Cog):
         self.state_lock = asyncio.Lock()
         self._token_lock = asyncio.Lock()  # prevents concurrent token refresh races
         self._session: Optional[aiohttp.ClientSession] = None  # shared session, created in cog_load
+        # Cache run-details per session to avoid hammering a broken endpoint with the same IDs.
+        # Maps run_id -> dict (successful data) or run_id -> None (confirmed unavailable).
+        self._run_details_cache: Dict[int, Optional[Dict]] = {}
 
     async def cog_load(self):
         # Shared session avoids per-command TCP handshakes and DNS lookups
@@ -127,6 +130,18 @@ class WoW(commands.Cog):
         }
         async with self.state_lock:
             await asyncio.to_thread(self._write_state_file, state)
+
+    async def get_run_details(self, session: aiohttp.ClientSession, run_id: int) -> Optional[Dict]:
+        """Fetch run details with an in-memory cache to avoid duplicate requests.
+        Returns None when raider.io returns 500 or any error (cached so it won't retry).
+        """
+        if run_id in self._run_details_cache:
+            return self._run_details_cache[run_id]
+        url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+        logger.info(f"  -> Fetching details: {url}")
+        result = await self.safe_get(session, url)
+        self._run_details_cache[run_id] = result  # cache None too, to suppress retries
+        return result
 
     async def safe_get(self, session: aiohttp.ClientSession, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, retries: int = 3, delay: int = 1) -> Optional[Dict]:
         """Get JSON data safely with retries and error handling."""
@@ -781,22 +796,9 @@ class WoW(commands.Cog):
                         if run_id in tracker["counted_runs"]:
                             continue
                             
-                        details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
-                        run_details = await self.safe_get(session, details_url)
-                        if not run_details:
-                            continue
-                            
-                        roster = run_details.get("roster", [])
+                        run_details = await self.get_run_details(session, run_id)
                         
-                        # 1. Role Check: Multiple tanks or healers indicate a carry
-                        tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
-                        healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                        
-                        # 2. Buyer Check: Any player below 275 ilvl is being carried
-                        # Note: 'items' contains 'item_level_equipped' in run-details
-                        buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 for m in roster)
-                        
-                        # Efficiency Check
+                        # Efficiency check — always available from the basic run summary
                         clear_time_ms = run.get("clear_time_ms", 0)
                         par_time_ms = run.get("par_time_ms", 0)
                         efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
@@ -804,15 +806,30 @@ class WoW(commands.Cog):
                         is_boost = False
                         reason = ""
 
-                        if buyer_found:
-                            is_boost = True
-                            reason = "Buyer detected (<275 ilvl)"
-                        elif tanks > 1 or healers > 1:
-                            is_boost = True
-                            reason = f"Role mismatch ({tanks}T/{healers}H)"
-                        elif efficiency <= 0.75:
-                            is_boost = True
-                            reason = f"Fast clear ({efficiency:.1%})"
+                        if run_details:
+                            roster = run_details.get("roster", [])
+                            # Role Check: Multiple tanks or healers indicate a carry
+                            tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                            healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                            # Buyer Check: player below 275 ilvl; ignore 0 (missing data)
+                            buyer_found = any(
+                                0 < m.get("items", {}).get("item_level_equipped", 0) < 275
+                                for m in roster
+                            )
+                            if buyer_found:
+                                is_boost = True
+                                reason = "Buyer detected (<275 ilvl)"
+                            elif tanks > 1 or healers > 1:
+                                is_boost = True
+                                reason = f"Role mismatch ({tanks}T/{healers}H)"
+                            elif efficiency <= 0.75:
+                                is_boost = True
+                                reason = f"Fast clear ({efficiency:.1%})"
+                        else:
+                            # run-details unavailable (raider.io 500) — fall back to efficiency only
+                            if efficiency <= 0.75:
+                                is_boost = True
+                                reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
                         
                         if is_boost:
                             new_runs.append(completed_at)
@@ -1220,11 +1237,9 @@ class WoW(commands.Cog):
                     logger.info(f"  -> Skipping: run {run_id} already counted")
                     continue
 
-                details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
-                logger.info(f"  -> Fetching details: {details_url}")
-                run_details = await self.safe_get(self._session, details_url)
+                run_details = await self.get_run_details(self._session, run_id)
                 if not run_details:
-                    logger.warning("  -> Skipping run %s: raider.io returned no data (likely HTTP 500 — server-side issue)", run_id)
+                    logger.warning("  -> Skipping run %s: run-details unavailable (raider.io 500 — server-side issue)", run_id)
                     continue
                 
                 roster = run_details.get("roster", [])
