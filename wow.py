@@ -1247,6 +1247,25 @@ class WoW(commands.Cog):
         else:
             await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
 
+    @booster.command(name="list")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_list(self, ctx):
+        """List all registered characters (Admin only)."""
+        if not self.booster_config:
+            return await ctx.send("❌ No characters are currently registered.")
+            
+        lines = []
+        for t in self.booster_config:
+            name = t["name"]
+            realm = t["realm"]
+            f_name = t.get("friend_name")
+            line = f"• **{name}**-{realm.title()}"
+            if f_name:
+                line += f" (Linked to: {f_name})"
+            lines.append(line)
+        
+        await ctx.send("📋 **Registered Boosters:**\n" + "\n".join(lines))
+
     @booster.command(name="clear_cache")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_clear_cache(self, ctx):
