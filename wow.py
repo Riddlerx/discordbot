@@ -1130,8 +1130,17 @@ class WoW(commands.Cog):
 
     @booster.command(name="register")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
-    async def booster_register(self, ctx, friend_name: Optional[str] = None, *, char_query: str):
-        """Register a character for weekly 10+ run tracking (Admin only)."""
+    async def booster_register(self, ctx, *args):
+        """Register a character. Optional: !booster register [friend_name] <Name-Realm>"""
+        if len(args) == 1:
+            friend_name = None
+            char_query = args[0]
+        elif len(args) >= 2:
+            friend_name = args[0]
+            char_query = " ".join(args[1:])
+        else:
+            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster register [friend_name] <Name-Realm>`")
+
         name, realm = self._parse_char_query(char_query)
 
         async with ctx.typing():
