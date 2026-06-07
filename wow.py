@@ -1310,13 +1310,19 @@ class WoW(commands.Cog):
                 # Group by friend_name
                 friend_data = {}
                 for t in self.booster_config:
-                    f_name = t.get("friend_name", "Unknown")
+                    f_name = t.get("friend_name")
+                    if not f_name or f_name == "Unknown":
+                        # If no friend name, treat the character name as the group name
+                        f_name = t["name"]
+
                     if f_name not in friend_data:
                         friend_data[f_name] = {"total": 0, "chars": []}
 
                     count = t.get("weekly_count", 0)
                     friend_data[f_name]["total"] += count
-                    friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
+                    # Only add to chars list if the friend group has more than one char or the name differs
+                    if len(friend_data[f_name]["chars"]) > 0 or f_name != t["name"]:
+                        friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
 
                 # Sort friends by total count
                 sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
