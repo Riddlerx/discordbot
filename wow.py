@@ -1393,6 +1393,39 @@ class WoW(commands.Cog):
         else:
             await ctx.send("❌ No characters were linked.")
 
+    @booster.command(name="adjust")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_adjust(self, ctx, *, args: str):
+        """Add or subtract from a character's weekly count (Admin only)."""
+        parts = args.rsplit(None, 1)
+        if len(parts) < 2:
+            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster adjust <name-realm> <amount>`")
+            
+        char_query, amount_str = parts[0], parts[1]
+        try:
+            amount = int(amount_str)
+        except ValueError:
+            return await ctx.send("⚠️ Amount must be a number (e.g., -5 or 2).")
+
+        name, realm = self._parse_char_query(char_query)
+        
+        def norm(r): return r.lower().replace(" ", "").replace("-", "").replace("'", "")
+        
+        target_norm = norm(realm)
+        found_tracker = None
+        for t in self.booster_config:
+            if t["name"].lower() == name.lower() and norm(t["realm"]) == target_norm:
+                t["weekly_count"] = max(0, t.get("weekly_count", 0) + amount)
+                found_tracker = t
+                break
+        
+        if found_tracker:
+            await self.save_state()
+            action = "Added" if amount > 0 else "Removed"
+            await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{found_tracker['name']}-{found_tracker['realm']}**. New total: **{found_tracker['weekly_count']}**.")
+        else:
+            await ctx.send(f"❌ **{char_query}** is not being tracked. Check the name and realm.")
+
 
 async def setup(bot):
     await bot.add_cog(WoW(bot))
