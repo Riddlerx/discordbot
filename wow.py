@@ -876,23 +876,25 @@ class WoW(commands.Cog):
     async def booster_auto_tracker(self):
         """Periodically poll Raider.io for new Mythic 10+ runs for registered boosters."""
         await self.bot.wait_until_ready()
-        async with aiohttp.ClientSession() as session:
-            while not self.bot.is_closed():
-                if not self.booster_config:
-                    await asyncio.sleep(60)
-                    continue
+        # Use the shared session (self._session) so that get_run_details' Future-based
+        # deduplication works correctly across concurrent scan_booster + deep_scan calls.
+        # A separate ClientSession here would bypass the inflight cache entirely.
+        while not self.bot.is_closed():
+            if not self.booster_config:
+                await asyncio.sleep(60)
+                continue
 
-                logger.info("Starting boost auto-tracker cycle for %d characters", len(self.booster_config))
-                updated = False
-                for tracker in self.booster_config:
-                    if await self.scan_booster(tracker, session):
-                        updated = True
-                    await asyncio.sleep(2) # Avoid aggressive polling
+            logger.info("Starting boost auto-tracker cycle for %d characters", len(self.booster_config))
+            updated = False
+            for tracker in self.booster_config:
+                if await self.scan_booster(tracker, self._session):
+                    updated = True
+                await asyncio.sleep(2) # Avoid aggressive polling
 
-                if updated:
-                    await self.save_state()
+            if updated:
+                await self.save_state()
 
-                await asyncio.sleep(3600) # Run every hour
+            await asyncio.sleep(3600) # Run every hour
 
     async def weekly_report_checker(self):
         """Check for WoW Tuesday reset and post the weekly booster summary."""

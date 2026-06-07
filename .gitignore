@@ -1,12 +1,9 @@
 venv/
 __pycache__/
 .env
+.env.backup
 bot_state.json
 node_modules/
 potoken.json
 cookies.txt
-
 deno/
-.env
-.env
-.env.backup
