@@ -1224,14 +1224,18 @@ class WoW(commands.Cog):
                     if not run_details: continue
                     
                     roster = run_details.get("roster", [])
+                    roster_debug = [f"{m['character']['name']}:{m.get('items', {}).get('item_level_equipped', 0)}" for m in roster]
+                    
                     tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                     healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                    buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 for m in roster)
+                    buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 and m.get("items", {}).get("item_level_equipped", 0) > 0 for m in roster)
                     
                     clear_time_ms = run.get("clear_time_ms", 0)
                     par_time_ms = run.get("par_time_ms", 0)
                     efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
                     
+                    logger.debug(f"Deep Scan Debug: {run.get('dungeon')} | Buyer: {buyer_found} | Roster: {roster_debug} | Eff: {efficiency:.2f}")
+
                     if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
                         # Only add this run if it was NOT already counted by the old logic.
                         # The old logic counted runs IF: (tanks > 1 or healers > 1 or efficiency <= 0.75)
