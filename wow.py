@@ -158,7 +158,7 @@ class WoW(commands.Cog):
         try:
             url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
             logger.info(f"  -> Fetching details: {url}")
-            result = await self.safe_get(session, url)
+            result = await self.safe_get(session, url, retries=5)
             self._run_details_cache[run_id] = result  # cache None too — no retries
             future.set_result(result)
             return result
