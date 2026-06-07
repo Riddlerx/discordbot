@@ -1228,7 +1228,16 @@ class WoW(commands.Cog):
                     
                     tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                     healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                    buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 and m.get("items", {}).get("item_level_equipped", 0) > 0 for m in roster)
+                    
+                    # 2. Buyer Check: Any player below 275 ilvl is being carried
+                    # Note: 'items' contains 'item_level_equipped' in run-details
+                    buyer_found = False
+                    for m in roster:
+                        ilvl = m.get("items", {}).get("item_level_equipped", 0)
+                        if 0 < ilvl < 275:
+                            buyer_found = True
+                        if ilvl == 0:
+                            logger.warning(f"DEEP SCAN: {m['character']['name']} has ilvl 0 in run {run.get('dungeon')}")
                     
                     clear_time_ms = run.get("clear_time_ms", 0)
                     par_time_ms = run.get("par_time_ms", 0)
