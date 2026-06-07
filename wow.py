@@ -1177,31 +1177,14 @@ class WoW(commands.Cog):
                 return await ctx.send("❌ Could not fetch data from Raider.IO.")
 
             recent_runs = data.get("mythic_plus_recent_runs", [])
+            logger.info(f"Deep Scan: Found {len(recent_runs)} total recent runs for {name}. Reset is {iso_reset}")
             added_count = 0
-            
-            # We need to track which runs we've already counted to avoid double-counting.
-            # For this simple fix, we'll just check if the run is NEWER than what we've seen,
-            # BUT the issue is the old logic might have 'skipped' them by updating last_run_at.
-            
-            # To fix this safely, we will look at all 10 runs and only add them if 
-            # they are boosts AND they happened THIS WEEK (after Tuesday).
-            
-            now_ts = time.time()
-            days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
-            import calendar
-            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
-            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
-            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
-            if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
-            iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
-
-            # Since we can't easily know if a specific run was already counted vs skipped,
-            # we will look for runs between Tuesday Reset and the CURRENT tracker['last_run_at'].
-            # If the new logic finds a boost that wasn't flagged, we add it.
             
             for run in recent_runs:
                 completed_at = run.get("completed_at")
+                logger.info(f"Checking run: {run.get('dungeon')} completed at {completed_at}")
                 if not completed_at or completed_at < iso_reset:
+                    logger.info("  -> Skipping: before reset")
                     continue
                 
                 # If this run was already processed by the NEW logic (after my update),
