@@ -1243,7 +1243,7 @@ class WoW(commands.Cog):
                     par_time_ms = run.get("par_time_ms", 0)
                     efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
                     
-                    logger.debug(f"Deep Scan Debug: {run.get('dungeon')} | Buyer: {buyer_found} | Roster: {roster_debug} | Eff: {efficiency:.2f}")
+                    logger.info(f"Deep Scan Debug: {run.get('dungeon')} | Buyer: {buyer_found} | Roster: {roster_debug} | Eff: {efficiency:.2f}")
 
                     if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
                         # Only add this run if it was NOT already counted by the old logic.
