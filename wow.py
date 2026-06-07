@@ -1220,56 +1220,56 @@ class WoW(commands.Cog):
                 if not run_details:
                     logger.info("  -> Skipping: could not fetch run details")
                     continue
+                
+                roster = run_details.get("roster", [])
+                roster_debug = []
+                
+                # 2. Buyer Check: Any player below 275 ilvl is being carried
+                buyer_found = False
+                for m in roster:
+                    char_info = m.get("character", {})
+                    items_info = m.get("items", {})
+                    ilvl = items_info.get("item_level_equipped", 0)
                     
-                    roster = run_details.get("roster", [])
-                    roster_debug = []
+                    name_str = char_info.get("name", "Unknown")
+                    roster_debug.append(f"{name_str}:{ilvl}")
                     
-                    # 2. Buyer Check: Any player below 275 ilvl is being carried
-                    buyer_found = False
-                    for m in roster:
-                        char_info = m.get("character", {})
-                        items_info = m.get("items", {})
-                        ilvl = items_info.get("item_level_equipped", 0)
-                        
-                        name_str = char_info.get("name", "Unknown")
-                        roster_debug.append(f"{name_str}:{ilvl}")
-                        
-                        # LOG FULL OBJECT FOR FIRST MEMBER TO SEE STRUCTURE
-                        if not roster_debug[1:]:
-                             logger.info(f"DEBUG STRUCTURE: {m}")
+                    # LOG FULL OBJECT FOR FIRST MEMBER TO SEE STRUCTURE
+                    if not roster_debug[1:]:
+                         logger.info(f"DEBUG STRUCTURE: {m}")
 
-                        if 0 < ilvl < 275:
-                            buyer_found = True
-                            logger.info(f"  -> BUYER FLAG: {name_str} at {ilvl} ilvl")
-                        
-                        if ilvl == 0:
-                            logger.warning(f"  -> ZERO ILVL: {name_str} (Full Items: {items_info})")
+                    if 0 < ilvl < 275:
+                        buyer_found = True
+                        logger.info(f"  -> BUYER FLAG: {name_str} at {ilvl} ilvl")
                     
-                    tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
-                    healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                    
-                    clear_time_ms = run.get("clear_time_ms", 0)
-                    par_time_ms = run.get("par_time_ms", 0)
-                    efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
-                    
-                    logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
+                    if ilvl == 0:
+                        logger.warning(f"  -> ZERO ILVL: {name_str} (Full Items: {items_info})")
+                
+                tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                
+                clear_time_ms = run.get("clear_time_ms", 0)
+                par_time_ms = run.get("par_time_ms", 0)
+                efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
+                
+                logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
 
-                    if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
-                        # Only add this run if it was NOT already counted by the old logic.
-                        # The old logic counted runs IF: (tanks > 1 or healers > 1 or efficiency <= 0.75)
-                        # So we only add if buyer_found is the ONLY reason, OR if it's a totally new run not in counted_runs.
-                        
-                        was_flagged_by_old_logic = (tanks > 1 or healers > 1 or efficiency <= 0.75)
-                        
-                        if not was_flagged_by_old_logic:
-                            added_count += 1
+                if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
+                    # Only add this run if it was NOT already counted by the old logic.
+                    # The old logic counted runs IF: (tanks > 1 or healers > 1 or efficiency <= 0.75)
+                    # So we only add if buyer_found is the ONLY reason, OR if it's a totally new run not in counted_runs.
+                    
+                    was_flagged_by_old_logic = (tanks > 1 or healers > 1 or efficiency <= 0.75)
+                    
+                    if not was_flagged_by_old_logic:
+                        added_count += 1
+                        tracker["counted_runs"].append(run_id)
+                        logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')}")
+                    else:
+                        # It was already counted by the old logic, so just make sure it's in the ID list
+                        # so the automatic scanner doesn't pick it up again later.
+                        if run_id not in tracker["counted_runs"]:
                             tracker["counted_runs"].append(run_id)
-                            logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')}")
-                        else:
-                            # It was already counted by the old logic, so just make sure it's in the ID list
-                            # so the automatic scanner doesn't pick it up again later.
-                            if run_id not in tracker["counted_runs"]:
-                                tracker["counted_runs"].append(run_id)
 
             if added_count > 0:
                 tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
