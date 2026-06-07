@@ -1217,26 +1217,37 @@ class WoW(commands.Cog):
                     if not run_details: continue
                     
                     roster = run_details.get("roster", [])
-                    roster_debug = [f"{m['character']['name']}:{m.get('items', {}).get('item_level_equipped', 0)}" for m in roster]
+                    roster_debug = []
+                    
+                    # 2. Buyer Check: Any player below 275 ilvl is being carried
+                    buyer_found = False
+                    for m in roster:
+                        char_info = m.get("character", {})
+                        items_info = m.get("items", {})
+                        ilvl = items_info.get("item_level_equipped", 0)
+                        
+                        name_str = char_info.get("name", "Unknown")
+                        roster_debug.append(f"{name_str}:{ilvl}")
+                        
+                        # LOG FULL OBJECT FOR FIRST MEMBER TO SEE STRUCTURE
+                        if not roster_debug[1:]:
+                             logger.info(f"DEBUG STRUCTURE: {m}")
+
+                        if 0 < ilvl < 275:
+                            buyer_found = True
+                            logger.info(f"  -> BUYER FLAG: {name_str} at {ilvl} ilvl")
+                        
+                        if ilvl == 0:
+                            logger.warning(f"  -> ZERO ILVL: {name_str} (Full Items: {items_info})")
                     
                     tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                     healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                    
-                    # 2. Buyer Check: Any player below 275 ilvl is being carried
-                    # Note: 'items' contains 'item_level_equipped' in run-details
-                    buyer_found = False
-                    for m in roster:
-                        ilvl = m.get("items", {}).get("item_level_equipped", 0)
-                        if 0 < ilvl < 275:
-                            buyer_found = True
-                        if ilvl == 0:
-                            logger.warning(f"DEEP SCAN: {m['character']['name']} has ilvl 0 in run {run.get('dungeon')}")
                     
                     clear_time_ms = run.get("clear_time_ms", 0)
                     par_time_ms = run.get("par_time_ms", 0)
                     efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
                     
-                    logger.info(f"Deep Scan Debug: {run.get('dungeon')} | Buyer: {buyer_found} | Roster: {roster_debug} | Eff: {efficiency:.2f}")
+                    logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
 
                     if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
                         # Only add this run if it was NOT already counted by the old logic.
