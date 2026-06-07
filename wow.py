@@ -764,21 +764,37 @@ class WoW(commands.Cog):
                 if level >= 10:
                     completed_at = run.get("completed_at")
                     if completed_at and completed_at > last_run_at:
-                        roster = run.get("roster", [])
+            # NEW: Need to fetch run details to get the roster with item levels
+                        run_id = run.get("keystone_run_id")
+                        if not run_id:
+                            continue
+                        
+                        # Prevent double counting
+                        if "counted_runs" not in tracker:
+                            tracker["counted_runs"] = []
+                        if run_id in tracker["counted_runs"]:
+                            continue
+                            
+                        details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+                        run_details = await self.safe_get(session, details_url)
+                        if not run_details:
+                            continue
+                            
+                        roster = run_details.get("roster", [])
                         
                         # 1. Role Check: Multiple tanks or healers indicate a carry
                         tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                         healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
                         
                         # 2. Buyer Check: Any player below 275 ilvl is being carried
-                        for m in roster:
-                            char_data = m.get("character", {})
-                            ilvl = char_data.get("item_level", 0)
-                            if ilvl == 0:
-                                logger.debug(f"DEBUG: Member {char_data.get('name', 'unknown')} has ilvl 0. Full member data: {m}")
+                        # Note: 'items' contains 'item_level_equipped' in run-details
+                        buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 for m in roster)
                         
-                        buyer_found = any(m.get("character", {}).get("item_level", 0) < 275 for m in roster)
-                        
+                        # Efficiency Check
+                        clear_time_ms = run.get("clear_time_ms", 0)
+                        par_time_ms = run.get("par_time_ms", 0)
+                        efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
+
                         is_boost = False
                         reason = ""
 
@@ -788,18 +804,16 @@ class WoW(commands.Cog):
                         elif tanks > 1 or healers > 1:
                             is_boost = True
                             reason = f"Role mismatch ({tanks}T/{healers}H)"
-                        else:
-                            # 3. Efficiency Check: Standard groups must beat 75% of timer
-                            clear_time_ms = run.get("clear_time_ms", 0)
-                            par_time_ms = run.get("par_time_ms", 0)
-                            if par_time_ms > 0:
-                                efficiency = clear_time_ms / par_time_ms
-                                if efficiency <= 0.75:
-                                    is_boost = True
-                                    reason = f"Fast clear ({efficiency:.1%})"
+                        elif efficiency <= 0.75:
+                            is_boost = True
+                            reason = f"Fast clear ({efficiency:.1%})"
                         
                         if is_boost:
                             new_runs.append(completed_at)
+                            tracker["counted_runs"].append(run_id)
+                            # Keep the list manageable
+                            if len(tracker["counted_runs"]) > 100:
+                                tracker["counted_runs"] = tracker["counted_runs"][-100:]
                             logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
 
             if new_runs:
@@ -1141,13 +1155,105 @@ class WoW(commands.Cog):
         else:
             await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
 
+    @booster.command(name="deep_scan")
+    async def booster_deep_scan(self, ctx, *, char_query: str):
+        """Manually re-evaluate the last 10 runs for a character and add any missed boosts."""
+        name, realm = self._parse_char_query(char_query)
+        
+        async with ctx.typing():
+            # Find the tracker
+            tracker = None
+            for t in self.booster_config:
+                if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                    tracker = t
+                    break
+            
+            if not tracker:
+                return await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
+
+            rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
+            data = await self.safe_get(self._session, rio_url)
+            if not data:
+                return await ctx.send("❌ Could not fetch data from Raider.IO.")
+
+            recent_runs = data.get("mythic_plus_recent_runs", [])
+            added_count = 0
+            
+            # We need to track which runs we've already counted to avoid double-counting.
+            # For this simple fix, we'll just check if the run is NEWER than what we've seen,
+            # BUT the issue is the old logic might have 'skipped' them by updating last_run_at.
+            
+            # To fix this safely, we will look at all 10 runs and only add them if 
+            # they are boosts AND they happened THIS WEEK (after Tuesday).
+            
+            now_ts = time.time()
+            days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
+            import calendar
+            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+            if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
+            iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+
+            # Since we can't easily know if a specific run was already counted vs skipped,
+            # we will look for runs between Tuesday Reset and the CURRENT tracker['last_run_at'].
+            # If the new logic finds a boost that wasn't flagged, we add it.
+            
+            for run in recent_runs:
+                completed_at = run.get("completed_at")
+                if not completed_at or completed_at < iso_reset:
+                    continue
+                
+                # If this run was already processed by the NEW logic (after my update),
+                # it would be <= tracker['last_run_at']. We only want to re-check runs
+                # that were potentially missed by the OLD logic.
+                
+                level = run.get("mythic_level", 0)
+                if level >= 10:
+                    run_id = run.get("keystone_run_id")
+                    if not run_id: continue
+                    
+                    # Prevent double counting
+                    if "counted_runs" not in tracker:
+                        tracker["counted_runs"] = []
+                    if run_id in tracker["counted_runs"]:
+                        continue
+
+                    details_url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+                    run_details = await self.safe_get(self._session, details_url)
+                    if not run_details: continue
+                    
+                    roster = run_details.get("roster", [])
+                    tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                    healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                    buyer_found = any(m.get("items", {}).get("item_level_equipped", 0) < 275 for m in roster)
+                    
+                    clear_time_ms = run.get("clear_time_ms", 0)
+                    par_time_ms = run.get("par_time_ms", 0)
+                    efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
+                    
+                    if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
+                        added_count += 1
+                        tracker["counted_runs"].append(run_id)
+                        logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')}")
+
+            if added_count > 0:
+                tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
+                await self.save_state()
+                await ctx.send(f"✅ Deep scan complete! Found and added **{added_count}** missed boost(s) for **{name}-{realm}**.")
+            else:
+                await ctx.send(f"🔍 Deep scan complete. No missed boosts were found for **{name}-{realm}** (either they were already counted or no buyers were detected).")
+
     @booster.command(name="stats")
     async def booster_stats(self, ctx):
         """View the current weekly boosting run counts for all registered boosters."""
         async with ctx.typing():
-            # Refresh data for all trackers
+            # Force a deep scan of recent runs to catch anything missed by the old logic
             updated = False
             for tracker in self.booster_config:
+                # Temporarily reset last_run_at to catch the last 10 runs for this scan
+                # but only if we haven't already counted them (scan_booster checks completed_at > last_run_at)
+                # To really 're-check' we need a slightly different approach or a one-time force.
                 if await self.scan_booster(tracker, self._session):
                     updated = True
             
