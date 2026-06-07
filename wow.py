@@ -1100,6 +1100,12 @@ class WoW(commands.Cog):
             
             await ctx.send(embed=embed)
 
+    async def cog_command_error(self, ctx, error):
+        if isinstance(error, commands.CheckFailure):
+            await ctx.send("SEND A MESSAGE TO Riddler")
+        else:
+            logger.error(f"Error in {ctx.command}: {error}")
+
     @commands.group(name="booster", invoke_without_command=True)
     async def booster(self, ctx):
         """Weekly booster tracking (Midnight 10+)."""
@@ -1123,8 +1129,9 @@ class WoW(commands.Cog):
             await ctx.send(embed=embed)
 
     @booster.command(name="register")
-    async def booster_register(self, ctx, *, char_query: str):
-        """Register a character for weekly 10+ run tracking."""
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_register(self, ctx, friend_name: str, *, char_query: str):
+        """Register a character for weekly 10+ run tracking (Admin only)."""
         name, realm = self._parse_char_query(char_query)
 
         async with ctx.typing():
@@ -1140,8 +1147,6 @@ class WoW(commands.Cog):
             # Calculate the most recent Tuesday 15:00 UTC
             now_ts = time.time()
             dt_utc = time.gmtime(now_ts)
-            # 0=Mon, 1=Tue, ..., 6=Sun. 
-            # (days_since_tue = 0 if today is Tue, 1 if Wed, etc.)
             days_since_tue = (dt_utc.tm_wday - 1) % 7
             
             # Get Tuesday at 15:00 UTC
@@ -1157,10 +1162,11 @@ class WoW(commands.Cog):
             iso_start = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
             
             new_tracker = {
-                "discord_id": ctx.author.id,
+                "friend_name": friend_name,
                 "name": profile["name"],
                 "realm": profile["realm"]["slug"],
-                "last_run_at": iso_start
+                "last_run_at": iso_start,
+                "weekly_count": 0
             }
             self.booster_config.append(new_tracker)
             
@@ -1168,11 +1174,12 @@ class WoW(commands.Cog):
             await self.scan_booster(new_tracker, self._session)
             await self.save_state()
             
-            await ctx.send(f"✅ Registered **{profile['name']}-{profile['realm']['name']}**! I've back-dated tracking to this week's Tuesday reset. 🚀")
+            await ctx.send(f"✅ Registered **{profile['name']}-{profile['realm']['name']}** for **{friend_name}**! 🚀")
 
     @booster.command(name="register_bulk")
-    async def booster_register_bulk(self, ctx, *, char_list: str):
-        """Register multiple characters at once, comma separated. (e.g., !booster register_bulk Name-Realm, Name2-Realm2)"""
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_register_bulk(self, ctx, friend_name: str, *, char_list: str):
+        """Register multiple characters at once, comma separated. (Admin only)"""
         queries = [q.strip() for q in char_list.split(',')]
         results = []
         
@@ -1202,29 +1209,29 @@ class WoW(commands.Cog):
                 iso_start = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
                 
                 new_tracker = {
-                    "discord_id": ctx.author.id,
+                    "friend_name": friend_name,
                     "name": profile["name"],
                     "realm": profile["realm"]["slug"],
-                    "last_run_at": iso_start
+                    "last_run_at": iso_start,
+                    "weekly_count": 0
                 }
                 self.booster_config.append(new_tracker)
                 await self.scan_booster(new_tracker, self._session)
-                results.append(f"✅ {profile['name']}-{profile['realm']['name']}: Registered")
+                results.append(f"✅ {profile['name']}-{profile['realm']['name']}: Registered for {friend_name}")
             
             await self.save_state()
             await ctx.send("📋 **Bulk Registration Results:**\n" + "\n".join(results))
 
     @booster.command(name="unregister")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_unregister(self, ctx, *, char_query: str):
-        """Stop tracking a character."""
+        """Stop tracking a character (Admin only)."""
         name, realm = self._parse_char_query(char_query)
 
         found = False
         new_trackers = []
         for t in self.booster_config:
             if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
-                if t["discord_id"] != ctx.author.id and not ctx.author.guild_permissions.manage_guild:
-                    return await ctx.send("⛔ You can only unregister your own characters.")
                 found = True
             else:
                 new_trackers.append(t)
@@ -1237,15 +1244,16 @@ class WoW(commands.Cog):
             await ctx.send(f"❌ **{name}-{realm}** was not being tracked.")
 
     @booster.command(name="clear_cache")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_clear_cache(self, ctx):
         """Clear the run details cache to force re-evaluation of runs."""
         self._run_details_cache = {}
         await ctx.send("✅ Cleared run details cache. You can now run `!booster deep_scan` again.")
 
     @booster.command(name="deep_scan")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_deep_scan(self, ctx, *, char_query: str):
-        """Manually re-evaluate the last 10 runs for a character and add any missed boosts."""
+        """Manually re-evaluate the last 10 runs for a character and add any missed boosts (Admin only)."""
         self._run_details_cache = {}
         name, realm = self._parse_char_query(char_query)
         
@@ -1259,114 +1267,13 @@ class WoW(commands.Cog):
             
             if not tracker:
                 return await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
-
-    async def _perform_deep_scan(self, ctx, tracker):
-        name = tracker["name"]
-        realm = tracker["realm"]
-        
-        rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
-        data = await self.safe_get(self._session, rio_url)
-        if not data:
-            return await ctx.send(f"❌ Could not fetch data from Raider.IO for **{name}-{realm}**.")
-
-        # Calculate Tuesday Reset
-        now_ts = time.time()
-        days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
-        import calendar
-        tue_date = time.gmtime(now_ts - days_since_tue * 86400)
-        tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
-        tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
-        if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
-        iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
-
-        recent_runs = data.get("mythic_plus_recent_runs", [])
-        logger.info(f"Deep Scan: Found {len(recent_runs)} total recent runs for {name}. Reset is {iso_reset}")
-        added_count = 0
-        
-        for run in recent_runs:
-            completed_at = run.get("completed_at")
-            logger.info(f"Checking run: {run.get('dungeon')} completed at {completed_at}")
-            if not completed_at or completed_at < iso_reset:
-                logger.info("  -> Skipping: before reset")
-                continue
             
-            level = run.get("mythic_level", 0)
-            if level < 10:
-                logger.info(f"  -> Skipping: level {level} is below 10")
-                continue
-                
-            run_id = run.get("keystone_run_id")
-            if not run_id:
-                logger.info("  -> Skipping: no run_id")
-                continue
-            
-            # Prevent double counting
-            if "counted_runs" not in tracker:
-                tracker["counted_runs"] = []
-            if run_id in tracker["counted_runs"]:
-                logger.info(f"  -> Skipping: run {run_id} already counted")
-                continue
-
-            run_details = await self.get_run_details(self._session, run_id)
-            
-            clear_time_ms = run.get("clear_time_ms", 0)
-            par_time_ms = run.get("par_time_ms", 0)
-            efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
-
-            is_boost = False
-            reason = ""
-            buyer_found = False
-            tanks = 0
-            healers = 0
-            roster_debug = []
-
-            if run_details:
-                roster = run_details.get("roster", [])
-                tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
-                healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                
-                for m in roster:
-                    char_info = m.get("character", {})
-                    items_info = m.get("items", {})
-                    ilvl = items_info.get("item_level_equipped", 0)
-                    name_str = char_info.get("name", "Unknown")
-                    roster_debug.append(f"{name_str}:{ilvl}")
-                    if 0 < ilvl < 275:
-                        buyer_found = True
-                
-                if buyer_found:
-                    is_boost = True
-                    reason = "Buyer detected (<275 ilvl)"
-                elif tanks > 1 or healers > 1:
-                    is_boost = True
-                    reason = f"Role mismatch ({tanks}T/{healers}H)"
-                elif efficiency <= 0.75:
-                    is_boost = True
-                    reason = f"Fast clear ({efficiency:.1%})"
-            else:
-                logger.warning("  -> run-details unavailable for %s (raider.io 500), falling back to efficiency", run_id)
-                if efficiency <= 0.75:
-                    is_boost = True
-                    reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
-
-            logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
-
-            if is_boost:
-                tracker["counted_runs"].append(run_id)
-                added_count += 1
-                logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')} - Reason: {reason}")
-
-        if added_count > 0:
-            tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
-            await self.save_state()
-            await ctx.send(f"✅ Deep scan complete! Found and added **{added_count}** missed boost(s) for **{name}-{realm}**.")
-        else:
-            await ctx.send(f"🔍 Deep scan complete. No missed boosts were found for **{name}-{realm}** (either they were already counted or no buyers were detected).")
+            await self._perform_deep_scan(ctx, tracker)
 
     @booster.command(name="deep_scan_all")
-    @commands.has_permissions(manage_guild=True)
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_deep_scan_all(self, ctx):
-        """Manually re-evaluate the last 10 runs for ALL registered characters."""
+        """Manually re-evaluate the last 10 runs for ALL registered characters (Admin only)."""
         if not self.booster_config:
             return await ctx.send("❌ No characters are currently registered.")
             
@@ -1380,17 +1287,14 @@ class WoW(commands.Cog):
 
     @booster.command(name="stats")
     async def booster_stats(self, ctx):
-        """View the current weekly boosting run counts for all registered boosters."""
+        """View the current weekly boosting run counts, grouped by friend."""
         async with ctx.typing():
-            # Force a deep scan of recent runs to catch anything missed by the old logic
+            # Force a deep scan of recent runs to catch anything missed
             updated = False
             for tracker in self.booster_config:
-                # Temporarily reset last_run_at to catch the last 10 runs for this scan
-                # but only if we haven't already counted them (scan_booster checks completed_at > last_run_at)
-                # To really 're-check' we need a slightly different approach or a one-time force.
                 if await self.scan_booster(tracker, self._session):
                     updated = True
-            
+
             if updated:
                 await self.save_state()
 
@@ -1399,57 +1303,63 @@ class WoW(commands.Cog):
                 color=discord.Color.green(),
                 timestamp=discord.utils.utcnow()
             )
-            
+
             if not self.booster_config:
                 embed.description = "No characters registered for tracking."
             else:
-                # Sort by count
-                sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
-                lines = []
-                for t in sorted_trackers:
+                # Group by friend_name
+                friend_data = {}
+                for t in self.booster_config:
+                    f_name = t.get("friend_name", "Unknown")
+                    if f_name not in friend_data:
+                        friend_data[f_name] = {"total": 0, "chars": []}
+
                     count = t.get("weekly_count", 0)
-                    if count > 0:
-                        lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
-                
+                    friend_data[f_name]["total"] += count
+                    friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
+
+                # Sort friends by total count
+                sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
+
+                lines = []
+                for f_name, data in sorted_friends:
+                    if data["total"] > 0:
+                        lines.append(f"• **{f_name}**: {data['total']} runs ({', '.join(data['chars'])})")
+
                 if lines:
                     embed.description = "\n".join(lines)
                 else:
                     embed.description = "No boosting runs completed this week yet."
-                
+
             await ctx.send(embed=embed)
 
-    @booster.command(name="adjust")
-    @commands.has_permissions(manage_guild=True)
-    async def booster_adjust(self, ctx, *, args: str):
-        """Add or subtract from a character's weekly count (e.g. !booster adjust Eaindwin-Area 52 -5)."""
-        parts = args.rsplit(None, 1)
-        if len(parts) < 2:
-            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster adjust <name-realm> <amount>`")
+    @booster.command(name="link_chars")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_link_chars(self, ctx, friend_name: str, *, char_list: str):
+        """Link multiple characters to a single friend name (Admin only)."""
+        queries = [q.strip() for q in char_list.split(',')]
+        linked_count = 0
+        
+        for query in queries:
+            name, realm = self._parse_char_query(query)
             
-        char_query, amount_str = parts[0], parts[1]
-        try:
-            amount = int(amount_str)
-        except ValueError:
-            return await ctx.send("⚠️ Amount must be a number (e.g., -5 or 2).")
-
-        name, realm = self._parse_char_query(char_query)
+            # Find the character
+            found = False
+            for t in self.booster_config:
+                if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                    t["friend_name"] = friend_name
+                    found = True
+                    linked_count += 1
+                    break
+            
+            if not found:
+                await ctx.send(f"⚠️ Could not find registered character: **{query}**")
         
-        def norm(r): return r.lower().replace(" ", "").replace("-", "").replace("'", "")
-        
-        target_norm = norm(realm)
-        found_tracker = None
-        for t in self.booster_config:
-            if t["name"].lower() == name.lower() and norm(t["realm"]) == target_norm:
-                t["weekly_count"] = max(0, t.get("weekly_count", 0) + amount)
-                found_tracker = t
-                break
-        
-        if found_tracker:
+        if linked_count > 0:
             await self.save_state()
-            action = "Added" if amount > 0 else "Removed"
-            await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{found_tracker['name']}-{found_tracker['realm']}**. New total: **{found_tracker['weekly_count']}**.")
+            await ctx.send(f"✅ Successfully linked **{linked_count}** character(s) to **{friend_name}**.")
         else:
-            await ctx.send(f"❌ **{char_query}** is not being tracked. Check the name and realm.")
+            await ctx.send("❌ No characters were linked.")
 
 
 async def setup(bot):
