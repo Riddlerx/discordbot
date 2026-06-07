@@ -1302,55 +1302,53 @@ class WoW(commands.Cog):
                     continue
 
                 run_details = await self.get_run_details(self._session, run_id)
-                if not run_details:
-                    logger.warning("  -> Skipping run %s: run-details unavailable (raider.io 500 — server-side issue)", run_id)
-                    continue
-                
-                roster = run_details.get("roster", [])
-                roster_debug = []
-                
-                # 2. Buyer Check: Any player below 275 ilvl is being carried
-                buyer_found = False
-                for m in roster:
-                    char_info = m.get("character", {})
-                    items_info = m.get("items", {})
-                    ilvl = items_info.get("item_level_equipped", 0)
-                    
-                    name_str = char_info.get("name", "Unknown")
-                    roster_debug.append(f"{name_str}:{ilvl}")
-                    
-                    # LOG FULL OBJECT FOR FIRST MEMBER TO SEE STRUCTURE
-                    if not roster_debug[1:]:
-                         logger.info(f"DEBUG STRUCTURE: {m}")
-
-                    if 0 < ilvl < 275:
-                        buyer_found = True
-                        logger.info(f"  -> BUYER FLAG: {name_str} at {ilvl} ilvl")
-                    
-                    if ilvl == 0:
-                        logger.warning(f"  -> ZERO ILVL: {name_str} (Full Items: {items_info})")
-                
-                tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
-                healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
                 
                 clear_time_ms = run.get("clear_time_ms", 0)
                 par_time_ms = run.get("par_time_ms", 0)
                 efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
-                
+
+                is_boost = False
+                reason = ""
+                buyer_found = False
+                tanks = 0
+                healers = 0
+                roster_debug = []
+
+                if run_details:
+                    roster = run_details.get("roster", [])
+                    tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                    healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                    
+                    for m in roster:
+                        char_info = m.get("character", {})
+                        items_info = m.get("items", {})
+                        ilvl = items_info.get("item_level_equipped", 0)
+                        name_str = char_info.get("name", "Unknown")
+                        roster_debug.append(f"{name_str}:{ilvl}")
+                        if 0 < ilvl < 275:
+                            buyer_found = True
+                    
+                    if buyer_found:
+                        is_boost = True
+                        reason = "Buyer detected (<275 ilvl)"
+                    elif tanks > 1 or healers > 1:
+                        is_boost = True
+                        reason = f"Role mismatch ({tanks}T/{healers}H)"
+                    elif efficiency <= 0.75:
+                        is_boost = True
+                        reason = f"Fast clear ({efficiency:.1%})"
+                else:
+                    logger.warning("  -> run-details unavailable for %s (raider.io 500), falling back to efficiency", run_id)
+                    if efficiency <= 0.75:
+                        is_boost = True
+                        reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
+
                 logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
 
-                if buyer_found or tanks > 1 or healers > 1 or efficiency <= 0.75:
-                    # Mark as counted regardless of whether it was caught by old logic or new logic
-                    if run_id not in tracker["counted_runs"]:
-                        tracker["counted_runs"].append(run_id)
-                        
-                    # Only increment count if it's a NEW detection
-                    was_flagged_by_old_logic = (tanks > 1 or healers > 1 or efficiency <= 0.75)
-                    if not was_flagged_by_old_logic:
-                        added_count += 1
-                        logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')}")
-                    else:
-                        logger.info(f"Deep Scan: Run {run_id} already accounted for.")
+                if is_boost:
+                    tracker["counted_runs"].append(run_id)
+                    added_count += 1
+                    logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')} - Reason: {reason}")
 
             if added_count > 0:
                 tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
