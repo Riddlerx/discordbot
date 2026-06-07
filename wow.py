@@ -156,7 +156,9 @@ class WoW(commands.Cog):
         future: asyncio.Future = loop.create_future()
         self._run_details_inflight[run_id] = future
         try:
-            url = f"https://raider.io/api/v1/mythic-plus/run-details?season=current&id={run_id}"
+            # Raider.io API is currently bugged where season=current throws a 500 error for run-details.
+            # Using the explicit season slug season-mn-1 fixes it.
+            url = f"https://raider.io/api/v1/mythic-plus/run-details?season=season-mn-1&id={run_id}"
             logger.info(f"  -> Fetching details: {url}")
             result = await self.safe_get(session, url, retries=5)
             self._run_details_cache[run_id] = result  # cache None too — no retries
