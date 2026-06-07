@@ -1130,7 +1130,7 @@ class WoW(commands.Cog):
 
     @booster.command(name="register")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
-    async def booster_register(self, ctx, friend_name: str, *, char_query: str):
+    async def booster_register(self, ctx, friend_name: Optional[str] = None, *, char_query: str):
         """Register a character for weekly 10+ run tracking (Admin only)."""
         name, realm = self._parse_char_query(char_query)
 
@@ -1174,7 +1174,11 @@ class WoW(commands.Cog):
             await self.scan_booster(new_tracker, self._session)
             await self.save_state()
             
-            await ctx.send(f"✅ Registered **{profile['name']}-{profile['realm']['name']}** for **{friend_name}**! 🚀")
+            msg = f"✅ Registered **{profile['name']}-{profile['realm']['name']}**"
+            if friend_name:
+                msg += f" for **{friend_name}**"
+            msg += "! 🚀"
+            await ctx.send(msg)
 
     @booster.command(name="register_bulk")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
