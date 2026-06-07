@@ -868,20 +868,22 @@ class WoW(commands.Cog):
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
                             else:
-                                # DO NOT mark as definitive boost/non-boost, do not add to counted_runs
+                                # DO NOT mark as definitive, DO NOT add to counted_runs
                                 logger.warning(f"  -> Skipping definitive check for {run.get('dungeon')} +{level} due to API error (will retry)")
-                                continue
+                                continue # This continues the for loop, skipping the counting logic below for THIS run
+
+                        # --- Counting Logic (only reached if definitive check or successful fallback) ---
                         
+                        # Add to counted_runs definitively
+                        tracker["counted_runs"].append(run_id)
+                        # Keep the list manageable
+                        if len(tracker["counted_runs"]) > 100:
+                            tracker["counted_runs"] = tracker["counted_runs"][-100:]
+
                         if is_boost:
                             new_runs.append(completed_at)
-                            tracker["counted_runs"].append(run_id)
-                            # Keep the list manageable
-                            if len(tracker["counted_runs"]) > 100:
-                                tracker["counted_runs"] = tracker["counted_runs"][-100:]
                             logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
                         else:
-                            # Only add to counted_runs if we were able to definitively check
-                            tracker["counted_runs"].append(run_id)
                             logger.info(f"  -> Not a boost: {run.get('dungeon')} +{level} | Eff: {efficiency:.1%}")
 
             # Advance last_run_at past ALL seen runs (not just boosts), so they
