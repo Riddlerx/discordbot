@@ -1260,104 +1260,123 @@ class WoW(commands.Cog):
             if not tracker:
                 return await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
 
-            rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
-            data = await self.safe_get(self._session, rio_url)
-            if not data:
-                return await ctx.send("❌ Could not fetch data from Raider.IO.")
+    async def _perform_deep_scan(self, ctx, tracker):
+        name = tracker["name"]
+        realm = tracker["realm"]
+        
+        rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
+        data = await self.safe_get(self._session, rio_url)
+        if not data:
+            return await ctx.send(f"❌ Could not fetch data from Raider.IO for **{name}-{realm}**.")
 
-            # Calculate Tuesday Reset
-            now_ts = time.time()
-            days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
-            import calendar
-            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
-            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
-            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
-            if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
-            iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+        # Calculate Tuesday Reset
+        now_ts = time.time()
+        days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
+        import calendar
+        tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+        tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+        tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+        if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
+        iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
 
-            recent_runs = data.get("mythic_plus_recent_runs", [])
-            logger.info(f"Deep Scan: Found {len(recent_runs)} total recent runs for {name}. Reset is {iso_reset}")
-            added_count = 0
+        recent_runs = data.get("mythic_plus_recent_runs", [])
+        logger.info(f"Deep Scan: Found {len(recent_runs)} total recent runs for {name}. Reset is {iso_reset}")
+        added_count = 0
+        
+        for run in recent_runs:
+            completed_at = run.get("completed_at")
+            logger.info(f"Checking run: {run.get('dungeon')} completed at {completed_at}")
+            if not completed_at or completed_at < iso_reset:
+                logger.info("  -> Skipping: before reset")
+                continue
             
-            for run in recent_runs:
-                completed_at = run.get("completed_at")
-                logger.info(f"Checking run: {run.get('dungeon')} completed at {completed_at}")
-                if not completed_at or completed_at < iso_reset:
-                    logger.info("  -> Skipping: before reset")
-                    continue
+            level = run.get("mythic_level", 0)
+            if level < 10:
+                logger.info(f"  -> Skipping: level {level} is below 10")
+                continue
                 
-                level = run.get("mythic_level", 0)
-                if level < 10:
-                    logger.info(f"  -> Skipping: level {level} is below 10")
-                    continue
-                    
-                run_id = run.get("keystone_run_id")
-                if not run_id:
-                    logger.info("  -> Skipping: no run_id")
-                    continue
+            run_id = run.get("keystone_run_id")
+            if not run_id:
+                logger.info("  -> Skipping: no run_id")
+                continue
+            
+            # Prevent double counting
+            if "counted_runs" not in tracker:
+                tracker["counted_runs"] = []
+            if run_id in tracker["counted_runs"]:
+                logger.info(f"  -> Skipping: run {run_id} already counted")
+                continue
+
+            run_details = await self.get_run_details(self._session, run_id)
+            
+            clear_time_ms = run.get("clear_time_ms", 0)
+            par_time_ms = run.get("par_time_ms", 0)
+            efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
+
+            is_boost = False
+            reason = ""
+            buyer_found = False
+            tanks = 0
+            healers = 0
+            roster_debug = []
+
+            if run_details:
+                roster = run_details.get("roster", [])
+                tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
+                healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
                 
-                # Prevent double counting
-                if "counted_runs" not in tracker:
-                    tracker["counted_runs"] = []
-                if run_id in tracker["counted_runs"]:
-                    logger.info(f"  -> Skipping: run {run_id} already counted")
-                    continue
-
-                run_details = await self.get_run_details(self._session, run_id)
+                for m in roster:
+                    char_info = m.get("character", {})
+                    items_info = m.get("items", {})
+                    ilvl = items_info.get("item_level_equipped", 0)
+                    name_str = char_info.get("name", "Unknown")
+                    roster_debug.append(f"{name_str}:{ilvl}")
+                    if 0 < ilvl < 275:
+                        buyer_found = True
                 
-                clear_time_ms = run.get("clear_time_ms", 0)
-                par_time_ms = run.get("par_time_ms", 0)
-                efficiency = clear_time_ms / par_time_ms if par_time_ms > 0 else 1.0
-
-                is_boost = False
-                reason = ""
-                buyer_found = False
-                tanks = 0
-                healers = 0
-                roster_debug = []
-
-                if run_details:
-                    roster = run_details.get("roster", [])
-                    tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
-                    healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
-                    
-                    for m in roster:
-                        char_info = m.get("character", {})
-                        items_info = m.get("items", {})
-                        ilvl = items_info.get("item_level_equipped", 0)
-                        name_str = char_info.get("name", "Unknown")
-                        roster_debug.append(f"{name_str}:{ilvl}")
-                        if 0 < ilvl < 275:
-                            buyer_found = True
-                    
-                    if buyer_found:
-                        is_boost = True
-                        reason = "Buyer detected (<275 ilvl)"
-                    elif tanks > 1 or healers > 1:
-                        is_boost = True
-                        reason = f"Role mismatch ({tanks}T/{healers}H)"
-                    elif efficiency <= 0.75:
-                        is_boost = True
-                        reason = f"Fast clear ({efficiency:.1%})"
-                else:
-                    logger.warning("  -> run-details unavailable for %s (raider.io 500), falling back to efficiency", run_id)
-                    if efficiency <= 0.75:
-                        is_boost = True
-                        reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
-
-                logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
-
-                if is_boost:
-                    tracker["counted_runs"].append(run_id)
-                    added_count += 1
-                    logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')} - Reason: {reason}")
-
-            if added_count > 0:
-                tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
-                await self.save_state()
-                await ctx.send(f"✅ Deep scan complete! Found and added **{added_count}** missed boost(s) for **{name}-{realm}**.")
+                if buyer_found:
+                    is_boost = True
+                    reason = "Buyer detected (<275 ilvl)"
+                elif tanks > 1 or healers > 1:
+                    is_boost = True
+                    reason = f"Role mismatch ({tanks}T/{healers}H)"
+                elif efficiency <= 0.75:
+                    is_boost = True
+                    reason = f"Fast clear ({efficiency:.1%})"
             else:
-                await ctx.send(f"🔍 Deep scan complete. No missed boosts were found for **{name}-{realm}** (either they were already counted or no buyers were detected).")
+                logger.warning("  -> run-details unavailable for %s (raider.io 500), falling back to efficiency", run_id)
+                if efficiency <= 0.75:
+                    is_boost = True
+                    reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
+
+            logger.info(f"  => Result: {run.get('dungeon')} | Buyer: {buyer_found} | Roles: {tanks}T/{healers}H | Eff: {efficiency:.2f} | Roster: {roster_debug}")
+
+            if is_boost:
+                tracker["counted_runs"].append(run_id)
+                added_count += 1
+                logger.info(f"Deep Scan: Found missed boost for {name}: {run.get('dungeon')} - Reason: {reason}")
+
+        if added_count > 0:
+            tracker["weekly_count"] = tracker.get("weekly_count", 0) + added_count
+            await self.save_state()
+            await ctx.send(f"✅ Deep scan complete! Found and added **{added_count}** missed boost(s) for **{name}-{realm}**.")
+        else:
+            await ctx.send(f"🔍 Deep scan complete. No missed boosts were found for **{name}-{realm}** (either they were already counted or no buyers were detected).")
+
+    @booster.command(name="deep_scan_all")
+    @commands.has_permissions(manage_guild=True)
+    async def booster_deep_scan_all(self, ctx):
+        """Manually re-evaluate the last 10 runs for ALL registered characters."""
+        if not self.booster_config:
+            return await ctx.send("❌ No characters are currently registered.")
+            
+        await ctx.send(f"🔄 Starting deep scan for all {len(self.booster_config)} registered characters... This may take a minute.")
+        self._run_details_cache = {}
+        async with ctx.typing():
+            for tracker in self.booster_config:
+                await self._perform_deep_scan(ctx, tracker)
+                await asyncio.sleep(1)
+        await ctx.send("🎉 Finished deep scanning all characters!")
 
     @booster.command(name="stats")
     async def booster_stats(self, ctx):
