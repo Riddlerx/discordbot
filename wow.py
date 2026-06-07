@@ -1176,6 +1176,16 @@ class WoW(commands.Cog):
             if not data:
                 return await ctx.send("❌ Could not fetch data from Raider.IO.")
 
+            # Calculate Tuesday Reset
+            now_ts = time.time()
+            days_since_tue = (time.gmtime(now_ts).tm_wday - 1) % 7
+            import calendar
+            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+            if now_ts < tue_reset_ts: tue_reset_ts -= 7 * 86400
+            iso_reset = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+
             recent_runs = data.get("mythic_plus_recent_runs", [])
             logger.info(f"Deep Scan: Found {len(recent_runs)} total recent runs for {name}. Reset is {iso_reset}")
             added_count = 0
