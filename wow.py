@@ -1282,6 +1282,22 @@ class WoW(commands.Cog):
         self._run_details_cache = {}
         await ctx.send("✅ Cleared run details cache. You can now run `!booster deep_scan` again.")
 
+    async def _perform_deep_scan(self, ctx, tracker):
+        """Helper to re-evaluate recent runs for a tracker."""
+        original_last_run = tracker.get("last_run_at")
+        # Reset last_run_at to re-scan recent runs
+        tracker["last_run_at"] = ""
+        
+        await self.scan_booster(tracker, self._session)
+        
+        # Restore original last_run_at if it was newer, 
+        # but keep it updated if we found newer runs.
+        if original_last_run and tracker.get("last_run_at", "") < original_last_run:
+            tracker["last_run_at"] = original_last_run
+            
+        await self.save_state()
+        await ctx.send(f"✅ Deep scan complete for **{tracker['name']}-{tracker['realm']}**.")
+
     @booster.command(name="deep_scan")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_deep_scan(self, ctx, *, char_query: str):
