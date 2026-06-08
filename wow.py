@@ -1307,13 +1307,13 @@ class WoW(commands.Cog):
         self._run_details_cache = {}
         await ctx.send("✅ Cleared run details cache. You can now run `!booster deep_scan` again.")
 
-    async def _perform_deep_scan(self, ctx, tracker):
-        """Helper to re-evaluate recent runs for a tracker."""
+    async def _perform_deep_scan(self, tracker):
+        """Helper to re-evaluate recent runs for a tracker. Returns a status message."""
         original_last_run = tracker.get("last_run_at")
         # Reset last_run_at to re-scan recent runs
         tracker["last_run_at"] = ""
         
-        await self.scan_booster(tracker, self._session)
+        updated = await self.scan_booster(tracker, self._session)
         
         # Restore original last_run_at if it was newer, 
         # but keep it updated if we found newer runs.
@@ -1321,7 +1321,8 @@ class WoW(commands.Cog):
             tracker["last_run_at"] = original_last_run
             
         await self.save_state()
-        await ctx.send(f"✅ Deep scan complete for **{tracker['name']}-{tracker['realm']}**.")
+        status = "Updated" if updated else "No new runs"
+        return f"• **{tracker['name']}-{tracker['realm']}**: {status}"
 
     @booster.command(name="deep_scan")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
@@ -1341,7 +1342,8 @@ class WoW(commands.Cog):
             if not tracker:
                 return await ctx.send(f"❌ **{name}-{realm}** is not being tracked.")
             
-            await self._perform_deep_scan(ctx, tracker)
+            message = await self._perform_deep_scan(tracker)
+            await ctx.send(message)
 
     @booster.command(name="deep_scan_all")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
@@ -1352,11 +1354,12 @@ class WoW(commands.Cog):
             
         await ctx.send(f"🔄 Starting deep scan for all {len(self.booster_config)} registered characters... This may take a minute.")
         self._run_details_cache = {}
+        results = []
         async with ctx.typing():
             for tracker in self.booster_config:
-                await self._perform_deep_scan(ctx, tracker)
+                results.append(await self._perform_deep_scan(tracker))
                 await asyncio.sleep(1)
-        await ctx.send("🎉 Finished deep scanning all characters!")
+        await ctx.send("🎉 **Deep Scan Results:**\n" + "\n".join(results))
 
     @booster.command(name="stats")
     async def booster_stats(self, ctx):
