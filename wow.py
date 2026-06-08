@@ -797,11 +797,32 @@ class WoW(commands.Cog):
                 
                 await asyncio.sleep(1800)
 
+    def get_last_reset_time(self) -> str:
+        """Returns the ISO string for the latest Tuesday 15:00 UTC reset."""
+        now_ts = time.time()
+        dt_utc = time.gmtime(now_ts)
+        days_since_tue = (dt_utc.tm_wday - 1) % 7
+        
+        # Get Tuesday at 15:00 UTC
+        import calendar
+        tue_date = time.gmtime(now_ts - days_since_tue * 86400)
+        tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
+        tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
+        
+        # If it is Tuesday but before 15:00, go back 7 days
+        if now_ts < tue_reset_ts:
+            tue_reset_ts -= 7 * 86400
+            
+        return time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
+
     async def scan_booster(self, tracker, session: aiohttp.ClientSession) -> bool:
         """Scan a single booster character for new runs. Returns True if new runs were found."""
         try:
             name, realm = tracker["name"], tracker["realm"]
-            last_run_at = tracker.get("last_run_at", "")
+            last_reset = self.get_last_reset_time()
+            
+            # Ensure we don't scan anything before this week's reset
+            last_run_at = max(tracker.get("last_run_at", ""), last_reset)
 
             rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
             
@@ -822,7 +843,11 @@ class WoW(commands.Cog):
                 level = run.get("mythic_level", 0)
                 if level >= 10:
                     completed_at = run.get("completed_at")
-                    if completed_at and completed_at > last_run_at:
+                    # Ignore runs before this week's reset
+                    if not completed_at or completed_at < last_reset:
+                        continue
+                        
+                    if completed_at > last_run_at:
                         run_id = run.get("keystone_run_id")
                         if not run_id:
                             continue
