@@ -824,8 +824,9 @@ class WoW(commands.Cog):
             name, realm = tracker["name"], tracker["realm"]
             last_reset = self.get_last_reset_time()
             
-            # Ensure we don't scan anything before this week's reset
+            # Start scanning from the last processed run
             last_run_at = max(tracker.get("last_run_at", ""), last_reset)
+            max_processed_at = last_run_at
 
             rio_url = f"https://raider.io/api/v1/characters/profile?region=us&realm={urllib.parse.quote(realm.lower())}&name={urllib.parse.quote(name.lower())}&fields=mythic_plus_recent_runs"
             
@@ -835,9 +836,8 @@ class WoW(commands.Cog):
 
             recent_runs = data.get("mythic_plus_recent_runs", [])
             new_runs = []       # completed_at of confirmed boosts
-            all_completed = []  # completed_at of ALL qualifying runs seen (to advance last_run_at)
 
-            # Ensure counted_runs exists once, before the loop
+            # Ensure counted_runs exists
             if "counted_runs" not in tracker:
                 tracker["counted_runs"] = []
 
@@ -855,12 +855,11 @@ class WoW(commands.Cog):
                         if not run_id:
                             continue
 
-                        # Always track that we've seen this run, even if it's not a boost.
-                        # This advances last_run_at so we don't re-evaluate it next hour.
-                        all_completed.append(completed_at)
-
                         # Prevent double counting boosts
                         if run_id in tracker["counted_runs"]:
+                            # Still count this as "processed" to advance last_run_at
+                            if completed_at > max_processed_at:
+                                max_processed_at = completed_at
                             continue
                             
                         run_details = await self.get_run_details(session, run_id)
@@ -900,7 +899,7 @@ class WoW(commands.Cog):
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
                             else:
-                                # DO NOT mark as definitive, DO NOT add to counted_runs
+                                # DO NOT mark as successfully processed, DO NOT add to counted_runs
                                 logger.warning(f"  -> Skipping definitive check for {run.get('dungeon')} +{level} due to API error (will retry)")
                                 continue # This continues the for loop, skipping the counting logic below for THIS run
 
@@ -912,21 +911,22 @@ class WoW(commands.Cog):
                         if len(tracker["counted_runs"]) > 100:
                             tracker["counted_runs"] = tracker["counted_runs"][-100:]
 
+                        # Successfully processed this run
+                        if completed_at > max_processed_at:
+                            max_processed_at = completed_at
+
                         if is_boost:
                             new_runs.append(completed_at)
                             logger.info(f"BOOST DETECTED: {name} cleared {run.get('dungeon')} +{level} - Reason: {reason}")
                         else:
                             logger.info(f"  -> Not a boost: {run.get('dungeon')} +{level} | Eff: {efficiency:.1%}")
 
-            # Advance last_run_at past ALL seen runs (not just boosts), so they
-            # aren't re-evaluated on the next hourly cycle.
-            if all_completed:
-                tracker["last_run_at"] = max(all_completed)
+            # Advance last_run_at only to the latest successfully processed run
+            tracker["last_run_at"] = max_processed_at
 
             if new_runs:
                 count = len(new_runs)
                 tracker["weekly_count"] = tracker.get("weekly_count", 0) + count
-                tracker["last_run_at"] = max(new_runs)
                 logger.info("Added %d boost runs for %s-%s", count, name, realm)
                 return True
         except Exception as e:
@@ -936,9 +936,6 @@ class WoW(commands.Cog):
     async def booster_auto_tracker(self):
         """Periodically poll Raider.io for new Mythic 10+ runs for registered boosters."""
         await self.bot.wait_until_ready()
-        # Use the shared session (self._session) so that get_run_details' Future-based
-        # deduplication works correctly across concurrent scan_booster + deep_scan calls.
-        # A separate ClientSession here would bypass the inflight cache entirely.
         while not self.bot.is_closed():
             if not self.booster_config:
                 await asyncio.sleep(60)
@@ -954,7 +951,7 @@ class WoW(commands.Cog):
             if updated:
                 await self.save_state()
 
-            await asyncio.sleep(3600) # Run every hour
+            await asyncio.sleep(1800) # Run every 30 mins
 
     async def weekly_report_checker(self):
         """Check for WoW Tuesday reset and post the weekly booster summary."""
