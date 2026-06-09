@@ -985,20 +985,8 @@ class WoW(commands.Cog):
                 logger.error("Could not find guild channel %s for weekly report", self.guild_channel_id)
                 return
 
-        # Hardcoded ranking data as requested
-        lines = [
-            "• **Bombome-Area-52**: 54 runs",
-            "• **Skillr-Thunderlord**: 46 runs",
-            "• **Polapapaya-Area-52**: 42 runs",
-            "• **Shuraa-Frostmourne**: 40 runs",
-            "• **Condorhero-Stormrage**: 32 runs",
-            "• **Mariio-Nagrand**: 22 runs",
-            "• **Shurax-Frostmourne**: 22 runs",
-            "• **Luigii-Nagrand**: 19 runs",
-            "• **Eaindwin-Area-52**: 14 runs",
-            "• **Vorgen-Tichondrius**: 7 runs",
-            "• **Hashishammy-Saurfang**: 6 runs"
-        ]
+        # Sort all tracked characters by count
+        sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
         
         # Look for Olympians role to mention
         role_mention = "@Olympians"
@@ -1013,8 +1001,20 @@ class WoW(commands.Cog):
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
-        
-        embed.add_field(name="Character Performance", value="\n".join(lines), inline=False)
+
+        if not sorted_trackers or all(t.get("weekly_count", 0) == 0 for t in sorted_trackers):
+            embed.description = "No boosting runs tracked this week."
+        else:
+            lines = []
+            for t in sorted_trackers:
+                count = t.get("weekly_count", 0)
+                if count > 0:
+                    lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
+            
+            if lines:
+                embed.add_field(name="Character Performance", value="\n".join(lines), inline=False)
+            else:
+                embed.description = "No boosting runs tracked this week."
 
         # Delete the previous weekly report if it exists
         if self.booster_report_message_id:
@@ -1157,13 +1157,6 @@ class WoW(commands.Cog):
         """Weekly booster tracking (Midnight 10+)."""
         if ctx.invoked_subcommand is None:
             await ctx.send("Use `!booster stats` to see weekly boosting runs")
-
-    @booster.command(name="lastweek")
-    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
-    async def booster_lastweek(self, ctx):
-        """Manually trigger the last week booster report (Admin only)."""
-        await self.send_weekly_booster_report()
-        await ctx.send("✅ Manually triggered the weekly report.")
 
     @booster.command(name="register")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
