@@ -990,7 +990,7 @@ class WoW(commands.Cog):
         
         embed = discord.Embed(
             title="📊 Weekly Booster Run Summary",
-            description="Mythic 8+ Boosting runs completed this week:",
+            description="**THIS WEEK BOOSTER RANKING:**",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
@@ -1135,23 +1135,7 @@ class WoW(commands.Cog):
     async def booster(self, ctx):
         """Weekly booster tracking (Midnight 10+)."""
         if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="🚀 Booster Run Tracking (Midnight 12.0.5)",
-                description=(
-                    "Track the number of 'Boosting Runs' completed each week.\n"
-                    "A boost is flagged if:\n"
-                    "• **Level:** Mythic 10 or higher\n"
-                    "• **Buyer:** Any player is < 275 ilvl\n"
-                    "• **Roles:** > 1 Tank or > 1 Healer\n"
-                    "• **Time:** Standard group clears in < 75% of timer\n\n"
-                    "**Commands:**\n"
-                    "`!booster register name-realm` - Start tracking\n"
-                    "`!booster stats` - View weekly counts\n"
-                    "`!booster adjust name-realm <amount>` - Manual fix (Mod only)"
-                ),
-                color=discord.Color.blue()
-            )
-            await ctx.send(embed=embed)
+            await ctx.send("Use `!booster stats` to see weekly boosting runs")
 
     @booster.command(name="register")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
