@@ -54,6 +54,7 @@ class WoW(commands.Cog):
         self.commodities_cache_time: float = 0
 
         self.guild_vault_message_id: Optional[int] = None
+        self.booster_report_message_id: Optional[int] = None
         self.last_content: Optional[str] = None
         
         # Booster tracking state
@@ -118,6 +119,7 @@ class WoW(commands.Cog):
             try:
                 state = await asyncio.to_thread(self._read_state_file)
                 self.guild_vault_message_id = state.get("guild_vault_message_id")
+                self.booster_report_message_id = state.get("booster_report_message_id")
                 self.last_content = state.get("last_content")
                 self.booster_config = state.get("booster_config", [])
                 self.last_weekly_report = state.get("last_weekly_report", "")
@@ -128,6 +130,7 @@ class WoW(commands.Cog):
         """Persist bot state without blocking the event loop."""
         state = {
             "guild_vault_message_id": self.guild_vault_message_id,
+            "booster_report_message_id": self.booster_report_message_id,
             "last_content": self.last_content,
             "booster_config": self.booster_config,
             "last_weekly_report": self.last_weekly_report
@@ -988,6 +991,13 @@ class WoW(commands.Cog):
         # Sort all tracked characters by count
         sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
         
+        # Look for Olympians role to mention
+        role_mention = "@Olympians"
+        if channel.guild:
+            role = discord.utils.get(channel.guild.roles, name="Olympians")
+            if role:
+                role_mention = role.mention
+
         embed = discord.Embed(
             title="📊 Weekly Booster Run Summary",
             description="**THIS WEEK BOOSTER RANKING:**",
@@ -1009,7 +1019,21 @@ class WoW(commands.Cog):
             else:
                 embed.description = "No boosting runs tracked this week."
 
-        await channel.send(embed=embed)
+        # Delete the previous weekly report if it exists
+        if self.booster_report_message_id:
+            try:
+                old_msg = await channel.fetch_message(self.booster_report_message_id)
+                await old_msg.delete()
+            except Exception:
+                pass
+
+        # Send the "Good Luck" message (deletes after 1 hour)
+        await channel.send(content=f"🍀 **GOOD LUCK ON VAULTS {role_mention}!**", delete_after=3600)
+        
+        # Send the new summary report (persistent until next week)
+        new_report = await channel.send(embed=embed)
+        self.booster_report_message_id = new_report.id
+        await self.save_state()
 
     @commands.command()
     async def guildvault(self, ctx):
