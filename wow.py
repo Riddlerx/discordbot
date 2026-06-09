@@ -960,8 +960,8 @@ class WoW(commands.Cog):
             try:
                 # WoW US Reset is Tuesday 15:00 UTC (8:00 AM PST)
                 now = time.gmtime()
-                # 1 = Tuesday
-                if now.tm_wday == 1 and now.tm_hour >= 15:
+                # 1 = Tuesday. Run if Tuesday or later, and past 15:00 UTC
+                if now.tm_wday >= 1 and now.tm_hour >= 15:
                     today_iso = f"{now.tm_year}-{now.tm_mon:02d}-{now.tm_mday:02d}"
                     if self.last_weekly_report != today_iso:
                         await self.send_weekly_booster_report()
