@@ -996,8 +996,8 @@ class WoW(commands.Cog):
                 role_mention = role.mention
 
         embed = discord.Embed(
-            title="📊 Weekly Booster Run Summary",
-            description="**THIS WEEK BOOSTER RANKING:**",
+            title="📊 Last Week's Booster Run Summary",
+            description="**LAST WEEK BOOSTER RANKING:**",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
