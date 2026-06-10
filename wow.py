@@ -54,7 +54,6 @@ class WoW(commands.Cog):
         self.commodities_cache_time: float = 0
 
         self.guild_vault_message_id: Optional[int] = None
-        self.booster_report_message_id: Optional[int] = None
         self.last_content: Optional[str] = None
         
         # Booster tracking state
@@ -127,7 +126,6 @@ class WoW(commands.Cog):
             try:
                 state = await asyncio.to_thread(self._read_state_file)
                 self.guild_vault_message_id = state.get("guild_vault_message_id")
-                self.booster_report_message_id = state.get("booster_report_message_id")
                 self.last_content = state.get("last_content")
                 self.booster_config = state.get("booster_config", [])
                 self.last_weekly_report = state.get("last_weekly_report", "")
@@ -138,7 +136,6 @@ class WoW(commands.Cog):
         """Persist bot state without blocking the event loop."""
         state = {
             "guild_vault_message_id": self.guild_vault_message_id,
-            "booster_report_message_id": self.booster_report_message_id,
             "last_content": self.last_content,
             "booster_config": self.booster_config,
             "last_weekly_report": self.last_weekly_report
@@ -998,7 +995,7 @@ class WoW(commands.Cog):
             await asyncio.sleep(3600) # Check every hour
 
     async def send_weekly_booster_report(self):
-        """Send the weekly booster summary to the guild channel."""
+        """Send this week's booster stats to the guild channel."""
         channel = self.bot.get_channel(self.guild_channel_id)
         if not channel:
             try:
@@ -1007,52 +1004,65 @@ class WoW(commands.Cog):
                 logger.error("Could not find guild channel %s for weekly report", self.guild_channel_id)
                 return
 
-        # Sort all tracked characters by count
-        sorted_trackers = sorted(self.booster_config, key=lambda x: x.get("weekly_count", 0), reverse=True)
-        
-        # Look for Olympians role to mention
+        # Final scan before reset so the Tuesday report includes any late runs.
+        updated = False
+        for tracker in self.booster_config:
+            if await self.scan_booster(tracker, self._session):
+                updated = True
+            await asyncio.sleep(1)
+
+        if updated:
+            await self.save_state()
+
         role_mention = "@Olympians"
         if channel.guild:
             role = discord.utils.get(channel.guild.roles, name="Olympians")
             if role:
                 role_mention = role.mention
 
+        embed = self._build_booster_stats_embed(title="🚀 Last Week's Booster Ranking")
+
+        await channel.send(content=f"🍀 **GOOD LUCK ON VAULTS {role_mention}!**", delete_after=3600)
+        await channel.send(embed=embed)
+        await self.save_state()
+
+    def _build_booster_stats_embed(self, title="🚀 Weekly Booster Stats"):
+        """Build the current weekly booster stats embed, grouped by friend."""
         embed = discord.Embed(
-            title="📊 Last Week's Booster Run Summary",
-            description="**LAST WEEK BOOSTER RANKING:**",
-            color=discord.Color.blue(),
+            title=title,
+            color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
         )
 
-        if not sorted_trackers or all(t.get("weekly_count", 0) == 0 for t in sorted_trackers):
-            embed.description = "No boosting runs tracked this week."
-        else:
-            lines = []
-            for t in sorted_trackers:
-                count = t.get("weekly_count", 0)
-                if count > 0:
-                    lines.append(f"• **{t['name']}-{t['realm'].title()}**: {count} runs")
-            
-            if lines:
-                embed.add_field(name="Character Performance", value="\n".join(lines), inline=False)
-            else:
-                embed.description = "No boosting runs tracked this week."
+        if not self.booster_config:
+            embed.description = "No characters registered for tracking."
+            return embed
 
-        # Delete the previous weekly report if it exists
-        if self.booster_report_message_id:
-            try:
-                old_msg = await channel.fetch_message(self.booster_report_message_id)
-                await old_msg.delete()
-            except Exception:
-                pass
+        friend_data = {}
+        for t in self.booster_config:
+            f_name = t.get("friend_name")
+            if not f_name or f_name == "Unknown":
+                f_name = t["name"]
 
-        # Send the "Good Luck" message (deletes after 1 hour)
-        await channel.send(content=f"🍀 **GOOD LUCK ON VAULTS {role_mention}!**", delete_after=3600)
-        
-        # Send the new summary report (persistent until next week)
-        new_report = await channel.send(embed=embed)
-        self.booster_report_message_id = new_report.id
-        await self.save_state()
+            if f_name not in friend_data:
+                friend_data[f_name] = {"total": 0, "chars": []}
+
+            count = t.get("weekly_count", 0)
+            friend_data[f_name]["total"] += count
+            if len(friend_data[f_name]["chars"]) > 0 or f_name != t["name"]:
+                friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
+
+        sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
+        lines = []
+        for f_name, data in sorted_friends:
+            if data["total"] > 0:
+                display = f"• **{f_name}**: {data['total']} runs"
+                if data["chars"]:
+                    display += f" ({', '.join(data['chars'])})"
+                lines.append(display)
+
+        embed.description = "\n".join(lines) if lines else "No boosting runs completed this week yet."
+        return embed
 
     @commands.command()
     async def guildvault(self, ctx):
@@ -1327,30 +1337,6 @@ class WoW(commands.Cog):
         
         await ctx.send("📋 **Registered Boosters:**\n" + "\n".join(lines))
 
-    @booster.command(name="last_report")
-    async def booster_last_report(self, ctx):
-        """Display the hardcoded last week's booster report."""
-        embed = discord.Embed(
-            title="📊 Weekly Booster Run Summary",
-            description="LAST WEEK BOOSTER RANKING:\nCharacter Performance",
-            color=discord.Color.blue()
-        )
-        report_data = (
-            "• Bombome-Area-52: 54 runs\n"
-            "• Skillr-Thunderlord: 46 runs\n"
-            "• Polapapaya-Area-52: 42 runs\n"
-            "• Shuraa-Frostmourne: 40 runs\n"
-            "• Condorhero-Stormrage: 32 runs\n"
-            "• Mariio-Nagrand: 22 runs\n"
-            "• Shurax-Frostmourne: 22 runs\n"
-            "• Luigii-Nagrand: 19 runs\n"
-            "• Eaindwin-Area-52: 14 runs\n"
-            "• Vorgen-Tichondrius: 7 runs\n"
-            "• Hashishammy-Saurfang: 6 runs"
-        )
-        embed.add_field(name="Results", value=report_data, inline=False)
-        await ctx.send(embed=embed)
-
     @booster.command(name="report")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_report(self, ctx):
@@ -1432,47 +1418,7 @@ class WoW(commands.Cog):
             if updated:
                 await self.save_state()
 
-            embed = discord.Embed(
-                title="🚀 Weekly Booster Stats",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
-            )
-
-            if not self.booster_config:
-                embed.description = "No characters registered for tracking."
-            else:
-                # Group by friend_name
-                friend_data = {}
-                for t in self.booster_config:
-                    f_name = t.get("friend_name")
-                    if not f_name or f_name == "Unknown":
-                        # If no friend name, treat the character name as the group name
-                        f_name = t["name"]
-
-                    if f_name not in friend_data:
-                        friend_data[f_name] = {"total": 0, "chars": []}
-
-                    count = t.get("weekly_count", 0)
-                    friend_data[f_name]["total"] += count
-                    # Only add to chars list if the friend group has more than one char or the name differs
-                    if len(friend_data[f_name]["chars"]) > 0 or f_name != t["name"]:
-                        friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
-
-                # Sort friends by total count
-                sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
-
-                lines = []
-                for f_name, data in sorted_friends:
-                    if data["total"] > 0:
-                        display = f"• **{f_name}**: {data['total']} runs"
-                        if data["chars"]:
-                            display += f" ({', '.join(data['chars'])})"
-                        lines.append(display)
-
-                if lines:
-                    embed.description = "\n".join(lines)
-                else:
-                    embed.description = "No boosting runs completed this week yet."
+            embed = self._build_booster_stats_embed()
 
             await ctx.send(embed=embed)
 
