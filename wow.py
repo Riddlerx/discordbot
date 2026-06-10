@@ -60,6 +60,14 @@ class WoW(commands.Cog):
         # Booster tracking state
         self.booster_config: List[Dict] = []  # List of {discord_id, name, realm, last_run_at, weekly_count}
         self.last_weekly_report: str = ""  # ISO date of last Tuesday report
+        
+        # Mapping classes to armor types
+        self.armor_map = {
+            "WARRIOR": "Plate", "PALADIN": "Plate", "DEATHKNIGHT": "Plate",
+            "HUNTER": "Mail", "SHAMAN": "Mail", "EVOKER": "Mail",
+            "ROGUE": "Leather", "DRUID": "Leather", "MONK": "Leather", "DEMONHUNTER": "Leather",
+            "MAGE": "Cloth", "PRIEST": "Cloth", "WARLOCK": "Cloth"
+        }
 
         self.blizzard_semaphore = asyncio.Semaphore(10)
         self.auto_update_task: Optional[asyncio.Task] = None
@@ -879,6 +887,17 @@ class WoW(commands.Cog):
                             # Role Check: Multiple tanks or healers indicate a carry
                             tanks = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "TANK")
                             healers = sum(1 for m in roster if m.get("character", {}).get("spec", {}).get("role") == "HEALER")
+                            
+                            # Armor Check: 4+ players of same armor type
+                            armor_counts = {}
+                            for m in roster:
+                                char_class = m.get("character", {}).get("class", {}).get("name", "").upper().replace(" ", "")
+                                armor = self.armor_map.get(char_class)
+                                if armor:
+                                    armor_counts[armor] = armor_counts.get(armor, 0) + 1
+                            
+                            same_armor_check = any(count >= 4 for count in armor_counts.values())
+
                             # Buyer Check: player below 275 ilvl; ignore 0 (missing data)
                             buyer_found = any(
                                 0 < m.get("items", {}).get("item_level_equipped", 0) < 275
@@ -890,6 +909,9 @@ class WoW(commands.Cog):
                             elif tanks > 1 or healers > 1:
                                 is_boost = True
                                 reason = f"Role mismatch ({tanks}T/{healers}H)"
+                            elif same_armor_check:
+                                is_boost = True
+                                reason = "Gear stacking (4+ same armor)"
                             elif efficiency <= 0.75:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%})"
