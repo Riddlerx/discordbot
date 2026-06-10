@@ -982,8 +982,8 @@ class WoW(commands.Cog):
             try:
                 # WoW US Reset is Tuesday 15:00 UTC (8:00 AM PST)
                 now = time.gmtime()
-                # 1 = Tuesday. Run if Tuesday or later, and past 15:00 UTC
-                if now.tm_wday >= 1 and now.tm_hour >= 15:
+                # 1 = Tuesday. Run only on Tuesday, past 15:00 UTC
+                if now.tm_wday == 1 and now.tm_hour >= 15:
                     today_iso = f"{now.tm_year}-{now.tm_mon:02d}-{now.tm_mday:02d}"
                     if self.last_weekly_report != today_iso:
                         await self.send_weekly_booster_report()
@@ -1326,6 +1326,34 @@ class WoW(commands.Cog):
             lines.append(line)
         
         await ctx.send("📋 **Registered Boosters:**\n" + "\n".join(lines))
+
+    @booster.command(name="last_report")
+    async def booster_last_report(self, ctx):
+        """Display the hardcoded last week's booster report."""
+        report = (
+            "📊 **Weekly Booster Run Summary**\n"
+            "LAST WEEK BOOSTER RANKING:\n"
+            "Character Performance\n"
+            "• Bombome-Area-52: 54 runs\n"
+            "• Skillr-Thunderlord: 46 runs\n"
+            "• Polapapaya-Area-52: 42 runs\n"
+            "• Shuraa-Frostmourne: 40 runs\n"
+            "• Condorhero-Stormrage: 32 runs\n"
+            "• Mariio-Nagrand: 22 runs\n"
+            "• Shurax-Frostmourne: 22 runs\n"
+            "• Luigii-Nagrand: 19 runs\n"
+            "• Eaindwin-Area-52: 14 runs\n"
+            "• Vorgen-Tichondrius: 7 runs\n"
+            "• Hashishammy-Saurfang: 6 runs"
+        )
+        await ctx.send(report)
+
+    @booster.command(name="report")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_report(self, ctx):
+        """Manually trigger the weekly booster report (Admin only)."""
+        await self.send_weekly_booster_report()
+        await ctx.send("✅ Weekly booster report sent.")
 
     @booster.command(name="clear_cache")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
