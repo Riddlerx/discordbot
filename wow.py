@@ -1330,10 +1330,12 @@ class WoW(commands.Cog):
     @booster.command(name="last_report")
     async def booster_last_report(self, ctx):
         """Display the hardcoded last week's booster report."""
-        report = (
-            "📊 **Weekly Booster Run Summary**\n"
-            "LAST WEEK BOOSTER RANKING:\n"
-            "Character Performance\n"
+        embed = discord.Embed(
+            title="📊 Weekly Booster Run Summary",
+            description="LAST WEEK BOOSTER RANKING:\nCharacter Performance",
+            color=discord.Color.blue()
+        )
+        report_data = (
             "• Bombome-Area-52: 54 runs\n"
             "• Skillr-Thunderlord: 46 runs\n"
             "• Polapapaya-Area-52: 42 runs\n"
@@ -1346,7 +1348,8 @@ class WoW(commands.Cog):
             "• Vorgen-Tichondrius: 7 runs\n"
             "• Hashishammy-Saurfang: 6 runs"
         )
-        await ctx.send(report)
+        embed.add_field(name="Results", value=report_data, inline=False)
+        await ctx.send(embed=embed)
 
     @booster.command(name="report")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
