@@ -11,9 +11,6 @@ import logging
 load_dotenv(override=True)
 STARTUP_MONOTONIC = time.perf_counter()
 
-# Add Deno to PATH for yt-dlp JS challenge solving
-os.environ["PATH"] += os.pathsep + "/root/.deno/bin"
-
 # Configuration
 ROLE_NAME = os.getenv("ROLE_NAME", "Demigods")
 WELCOME_CHANNEL = os.getenv("WELCOME_CHANNEL", "text")
