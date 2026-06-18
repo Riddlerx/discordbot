@@ -48,8 +48,8 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            # ios is the most reliable client for audio-only extraction
-            "player_client": ["ios", "android", "web"],
+            # 'android_music' is often the most reliable client for audio-only extraction
+            "player_client": ["android_music"],
             "player_skip": ["mweb"],
         }
     },
