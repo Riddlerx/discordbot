@@ -17,7 +17,6 @@ Set `YTDLP_USE_COOKIES=1` to enable cookie authentication. When enabled, the bot
 
 1. **Browser Profile:** If the environment variable `YTDLP_COOKIES_FROM_BROWSER` is set, the bot uses your browser's saved session to authenticate.
 2. **Cookie File:** If no browser profile is configured, it looks for a cookie file at the path specified by `YTDLP_COOKIES` or `YOUTUBE_COOKIES_PATH`.
-3. **Repo Default:** If neither of the above is configured, it uses `cookies.txt` in the repo root, but only if that file exists.
 
 
 ### Performance Tuning

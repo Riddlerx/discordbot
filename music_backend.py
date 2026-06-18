@@ -12,7 +12,6 @@ import aiohttp
 import yt_dlp
 
 TEMP_DIR = os.path.join(tempfile.gettempdir(), "discord_music")
-DEFAULT_COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
 DEFAULT_USER_AGENT = os.getenv(
     "USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
@@ -179,6 +178,7 @@ def get_yt_dlp_auth_config() -> dict:
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER")
     auth_options: dict = {}
 
+    # Browser profile authentication is prioritized over file-based cookies
     if cookies_from_browser:
         auth_options["cookiesfrombrowser"] = (cookies_from_browser,)
     elif cookies_path:
@@ -189,11 +189,6 @@ def get_yt_dlp_auth_config() -> dict:
                 logger.error("Configured yt-dlp cookie file is NOT READABLE: %s (Check permissions!)", cookies_path)
         else:
             logger.info("Configured yt-dlp cookie file does not exist; continuing without cookies: %s", cookies_path)
-    elif os.path.exists(DEFAULT_COOKIE_FILE):
-        if os.access(DEFAULT_COOKIE_FILE, os.R_OK):
-            auth_options["cookiefile"] = DEFAULT_COOKIE_FILE
-        else:
-            logger.warning("Default yt-dlp cookie file is NOT READABLE: %s", DEFAULT_COOKIE_FILE)
 
     return auth_options
 
