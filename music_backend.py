@@ -514,6 +514,7 @@ async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
             ydl._ies = ydl._ies 
             if warmup_youtube:
                 try:
+                    # Warmup search; errors here are expected/ignored during startup
                     ydl.extract_info("ytsearch1:youtube", download=False)
                 except Exception:
                     pass
