@@ -21,8 +21,8 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    # Prefer opus in a webm container — no re-encoding needed by FFmpeg, lowest CPU
-    "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
+    # Relaxed format selection to improve compatibility when specific formats are unavailable
+    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
