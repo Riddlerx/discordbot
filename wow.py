@@ -1061,10 +1061,22 @@ class WoW(commands.Cog):
         lines = []
         for f_name, data in sorted_friends:
             if data["total"] > 0:
-                display = f"• **{f_name}**: {data['total']} runs"
-                if data["chars"]:
-                    display += f" ({', '.join(data['chars'])})"
-                lines.append(display)
+                # Check if this friend group consists of a single character whose name matches the friend name
+                is_single_char_group = (
+                    len(data["characters"]) == 1 and
+                    self._parse_char_query(data["characters"][0]["name_realm"])[0].lower() == f_name.lower()
+                )
+
+                if is_single_char_group:
+                    # Output: "• CharName-Realm: Runs"
+                    lines.append(f"• **{data['characters'][0]['name_realm']}**: {data['characters'][0]['runs']} runs")
+                else:
+                    # Output: "• FriendName: Total Runs (Char1-Realm (runs), Char2-Realm (runs))"
+                    char_parts = [char["display"] for char in data["characters"]]
+                    display = f"• **{f_name}**: {data['total']} runs"
+                    if char_parts:
+                        display += f" ({', '.join(char_parts)})"
+                    lines.append(display)
 
         embed.description = "\n".join(lines) if lines else "No boosting runs completed this week yet."
         return embed
