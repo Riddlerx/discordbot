@@ -913,163 +913,161 @@ class Music(commands.Cog):
         self._remember_context(ctx)
         logger.info("Play command guild=%s user=%s query=%r", ctx.guild.id, ctx.author.id, query)
 
-        vc = ctx.voice_client
-        is_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
-        if is_busy or (vc and st.queue):
-            playlist_tracks = None
-            if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
-                playlist_tracks = await extract_spotify_metadata(query)
-
-            if isinstance(playlist_tracks, list) and playlist_tracks:
-                for track_query in playlist_tracks[:50]:
-                    st.queue.append({
-                        'title': track_query,
-                        'original_url': track_query,
-                    })
-                await ctx.send(f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify.")
-            else:
-                try:
-                    queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
-                    queued_info['original_url'] = query
-                except Exception as exc:
-                    logger.warning("Queue metadata resolve failed guild=%s query=%r: %s", ctx.guild.id, query, exc)
-                    queued_info = {
-                        'title': query,
-                        'original_url': query,
-                    }
-
-                st.queue.append(queued_info)
-                
-                pos = len(st.queue)
-                embed = discord.Embed(
-                    title="\U0001f4cb Added to Queue",
-                    description=f"**[{queued_info.get('title', query)}]({queued_info.get('webpage_url', '')})**",
-                    color=discord.Color.blue()
-                )
-                if queued_info.get('thumbnail'):
-                    embed.set_thumbnail(url=queued_info['thumbnail'])
-                embed.add_field(name="Position", value=f"#{pos}", inline=True)
-                if queued_info.get('duration'):
-                    m, s = divmod(int(queued_info['duration']), 60)
-                    embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
-                await ctx.send(embed=embed)
-
-            if not is_busy:
-                self._advance(ctx.guild.id)
-            elif _PREFETCH_ENABLED and not _FAST_START_STREAMING:
-                self._schedule_prefetch(ctx)
-            return
-
-        searching_msg = await ctx.send(f"\ud83d\udd0d Searching for `{query}`...")
-        voice_start = time.perf_counter()
-        voice_task = asyncio.create_task(self._ensure_voice(ctx))
-        try:
-            s_start = time.perf_counter()
-
-            # Check if it's a Spotify playlist/album for lazy loading
-            playlist_tracks = None
-            if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
-                playlist_tracks = await extract_spotify_metadata(query)
-
-            if isinstance(playlist_tracks, list) and playlist_tracks:
-                logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
-                # Resolve first track immediately using a stream URL so playback starts faster.
-                info, audio_path = await search_and_download(playlist_tracks[0], download=False)
-                info['original_url'] = playlist_tracks[0]
-                info['_audio_path'] = audio_path
-
-                # Add remaining tracks as placeholders (will be resolved when played)
-                for track_query in playlist_tracks[1:50]:
-                    st.queue.append({
-                        'title': track_query,
-                        'original_url': track_query,
-                    })
-
-                added_msg = f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify."
-            else:
-                # Single track or normal search
-                s_dl = time.perf_counter()
-                try:
-                    info, audio_path = await asyncio.wait_for(
-                        search_and_download(query, download=not _FAST_START_STREAMING),
-                        timeout=45.0
-                    )
-                except asyncio.TimeoutError:
-                    raise Exception("Search timed out after 45 seconds.")
-                except Exception:
-                    if not _FAST_START_STREAMING:
-                        raise
-                    logger.warning("Fast-start stream failed, retrying with download query=%r", query, exc_info=True)
-                    info, audio_path = await asyncio.wait_for(
-                        search_and_download(query, download=True),
-                        timeout=45.0
-                    )
-                elapsed = time.perf_counter() - s_dl
-                logger.info(
-                    "Search+%s guild=%s took %.2fs",
-                    "download" if not _FAST_START_STREAMING else "stream",
-                    ctx.guild.id,
-                    elapsed,
-                )
-
-                info['original_url'] = query
-                info['_audio_path'] = audio_path
-                added_msg = None
-
-            voice_ok = await voice_task
-            logger.info(
-                "Play command prepare guild=%s took %.2fs voice_wait_done=%s voice_elapsed_at_await=%.2fs",
-                ctx.guild.id,
-                time.perf_counter() - s_start,
-                voice_task.done(),
-                time.perf_counter() - voice_start,
-            )
-
-            # Re-check busy status after potentially slow resolution to avoid race conditions
+        async with ctx.typing(): # <--- Added typing indicator here
             vc = ctx.voice_client
-            is_busy_now = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
-            
-            if not voice_ok:
-                return
+            is_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+            if is_busy or (vc and st.queue):
+                playlist_tracks = None
+                if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
+                    playlist_tracks = await extract_spotify_metadata(query)
 
-            if is_busy_now or st.queue:
-                st.queue.append(info)
-                if added_msg:
-                    await ctx.send(added_msg)
+                if isinstance(playlist_tracks, list) and playlist_tracks:
+                    for track_query in playlist_tracks[:50]:
+                        st.queue.append({
+                            'title': track_query,
+                            'original_url': track_query,
+                        })
+                    await ctx.send(f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify.")
                 else:
+                    try:
+                        queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
+                        queued_info['original_url'] = query
+                    except Exception as exc:
+                        logger.warning("Queue metadata resolve failed guild=%s query=%r: %s", ctx.guild.id, query, exc)
+                        queued_info = {
+                            'title': query,
+                            'original_url': query,
+                        }
+
+                    st.queue.append(queued_info)
+                    
                     pos = len(st.queue)
                     embed = discord.Embed(
                         title="\U0001f4cb Added to Queue",
-                        description=f"**[{info.get('title')}]({info.get('webpage_url', '')})**",
+                        description=f"**[{queued_info.get('title', query)}]({queued_info.get('webpage_url', '')})**",
                         color=discord.Color.blue()
                     )
-                    if info.get('thumbnail'):
-                        embed.set_thumbnail(url=info['thumbnail'])
+                    if queued_info.get('thumbnail'):
+                        embed.set_thumbnail(url=queued_info['thumbnail'])
                     embed.add_field(name="Position", value=f"#{pos}", inline=True)
-                    if info.get('duration'):
-                        m, s = divmod(int(info['duration']), 60)
+                    if queued_info.get('duration'):
+                        m, s = divmod(int(queued_info['duration']), 60)
                         embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
                     await ctx.send(embed=embed)
-                
-                if not is_busy_now:
-                    self._advance(ctx.guild.id)
-                else:
-                    self._schedule_prefetch(ctx)
-            else:
-                if added_msg:
-                    await ctx.send(added_msg)
-                await self._play_track(ctx, info, ensure_voice=False)
 
-        except Exception as e:
-            if not voice_task.done():
-                voice_task.cancel()
-            if 'searching_msg' in locals():
-                await searching_msg.delete()
-            logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
-            return await ctx.send(f"\u274c Could not load track: {e}")
-        
-        if 'searching_msg' in locals():
-            await searching_msg.delete()
+                if not is_busy:
+                    self._advance(ctx.guild.id)
+                elif _PREFETCH_ENABLED and not _FAST_START_STREAMING:
+                    self._schedule_prefetch(ctx)
+                return
+
+            # This block used to have `searching_msg = await ctx.send(...)`, which is now handled by ctx.typing()
+            voice_start = time.perf_counter()
+            voice_task = asyncio.create_task(self._ensure_voice(ctx))
+            try:
+                s_start = time.perf_counter()
+
+                # Check if it's a Spotify playlist/album for lazy loading
+                playlist_tracks = None
+                if "open.spotify.com" in query and ("/playlist/" in query or "/album/" in query):
+                    playlist_tracks = await extract_spotify_metadata(query)
+
+                if isinstance(playlist_tracks, list) and playlist_tracks:
+                    logger.info("Spotify playlist detected with %d tracks, loading first one.", len(playlist_tracks))
+                    # Resolve first track immediately using a stream URL so playback starts faster.
+                    info, audio_path = await search_and_download(playlist_tracks[0], download=False)
+                    info['original_url'] = playlist_tracks[0]
+                    info['_audio_path'] = audio_path
+
+                    # Add remaining tracks as placeholders (will be resolved when played)
+                    for track_query in playlist_tracks[1:50]:
+                        st.queue.append({
+                            'title': track_query,
+                            'original_url': track_query,
+                        })
+
+                    added_msg = f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify."
+                else:
+                    # Single track or normal search
+                    s_dl = time.perf_counter()
+                    try:
+                        info, audio_path = await asyncio.wait_for(
+                            search_and_download(query, download=not _FAST_START_STREAMING),
+                            timeout=45.0
+                        )
+                    except asyncio.TimeoutError:
+                        raise Exception("Search timed out after 45 seconds.")
+                    except Exception:
+                        if not _FAST_START_STREAMING:
+                            raise
+                        logger.warning("Fast-start stream failed, retrying with download query=%r", query, exc_info=True)
+                        info, audio_path = await asyncio.wait_for(
+                            search_and_download(query, download=True),
+                            timeout=45.0
+                        )
+                    elapsed = time.perf_counter() - s_dl
+                    logger.info(
+                        "Search+%s guild=%s took %.2fs",
+                        "download" if not _FAST_START_STREAMING else "stream",
+                        ctx.guild.id,
+                        elapsed,
+                    )
+
+                    info['original_url'] = query
+                    info['_audio_path'] = audio_path
+                    added_msg = None
+
+                voice_ok = await voice_task
+                logger.info(
+                    "Play command prepare guild=%s took %.2fs voice_wait_done=%s voice_elapsed_at_await=%.2fs",
+                    ctx.guild.id,
+                    time.perf_counter() - s_start,
+                    voice_task.done(),
+                    time.perf_counter() - voice_start,
+                )
+
+                # Re-check busy status after potentially slow resolution to avoid race conditions
+                vc = ctx.voice_client
+                is_busy_now = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+                
+                if not voice_ok:
+                    return
+
+                if is_busy_now or st.queue:
+                    st.queue.append(info)
+                    if added_msg:
+                        await ctx.send(added_msg)
+                    else:
+                        pos = len(st.queue)
+                        embed = discord.Embed(
+                            title="\U0001f4cb Added to Queue",
+                            description=f"**[{info.get('title')}]({info.get('webpage_url', '')})**",
+                            color=discord.Color.blue()
+                        )
+                        if info.get('thumbnail'):
+                            embed.set_thumbnail(url=info['thumbnail'])
+                        embed.add_field(name="Position", value=f"#{pos}", inline=True)
+                        if info.get('duration'):
+                            m, s = divmod(int(info['duration']), 60)
+                            embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
+                        await ctx.send(embed=embed)
+                    
+                    if not is_busy_now:
+                        self._advance(ctx.guild.id)
+                    else:
+                        self._schedule_prefetch(ctx)
+                else:
+                    if added_msg:
+                        await ctx.send(added_msg)
+                    await self._play_track(ctx, info, ensure_voice=False)
+
+            except Exception as e:
+                if not voice_task.done():
+                    voice_task.cancel()
+                logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
+                return await ctx.send(f"\u274c Could not load track: {e}")
+            
+
 
     @commands.command(aliases=['pn'])
     async def playnext(self, ctx, *, query: str):
