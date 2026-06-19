@@ -993,10 +993,10 @@ class Music(commands.Cog):
                     try:
                         info, audio_path = await asyncio.wait_for(
                             search_and_download(query, download=not _FAST_START_STREAMING),
-                            timeout=45.0
+                            timeout=_MUSIC_SEARCH_TIMEOUT
                         )
                     except asyncio.TimeoutError:
-                        raise Exception("Search timed out after 45 seconds.")
+                        raise Exception(f"Search timed out after {_MUSIC_SEARCH_TIMEOUT} seconds.")
                     except Exception:
                         if not _FAST_START_STREAMING:
                             raise
