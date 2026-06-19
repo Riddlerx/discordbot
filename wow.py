@@ -180,7 +180,7 @@ class WoW(commands.Cog):
 
     async def safe_get(self, session: aiohttp.ClientSession, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, retries: int = 3, delay: int = 1) -> Optional[Dict]:
         """Get JSON data safely with retries and error handling."""
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=30)
         for attempt in range(1, retries + 1):
             try:
                 async with self.blizzard_semaphore:
