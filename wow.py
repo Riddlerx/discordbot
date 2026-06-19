@@ -1049,8 +1049,13 @@ class WoW(commands.Cog):
 
             count = t.get("weekly_count", 0)
             friend_data[f_name]["total"] += count
+            
+            char_display = f"{t['name']}-{t['realm']} ({count})"
             if len(friend_data[f_name]["chars"]) > 0 or f_name != t["name"]:
-                friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
+                friend_data[f_name]["chars"].append(char_display)
+            else:
+                # If only one char and name matches friend, still show realm
+                friend_data[f_name]["chars"].append(char_display)
 
         sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
         lines = []
@@ -1193,74 +1198,21 @@ class WoW(commands.Cog):
     @booster.command(name="register")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
     async def booster_register(self, ctx, *args):
-        """Register a character. Optional: !booster register [friend_name] <Name-Realm>"""
-        if len(args) == 1:
-            friend_name = None
-            char_query = args[0]
-        elif len(args) >= 2:
-            friend_name = args[0]
-            char_query = " ".join(args[1:])
-        else:
-            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster register [friend_name] <Name-Realm>`")
+        """Register one or multiple characters. Usage: !booster register [friend_name] <char1-realm>, <char2-realm>..."""
+        if not args:
+            return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster register [friend_name] <Name-Realm>, ...`")
 
-        name, realm = self._parse_char_query(char_query)
-
-        async with ctx.typing():
-            profile = await self.get_character_profile(self._session, name, realm)
-            if not profile:
-                return await ctx.send(f"❌ Character **{name}** on **{realm}** not found.")
-
-            # Check if already registered
-            for t in self.booster_config:
-                if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
-                    return await ctx.send(f"⚠️ **{name}-{realm}** is already being tracked.")
-
-            # Calculate the most recent Tuesday 15:00 UTC
-            now_ts = time.time()
-            dt_utc = time.gmtime(now_ts)
-            days_since_tue = (dt_utc.tm_wday - 1) % 7
-            
-            # Get Tuesday at 15:00 UTC
-            import calendar
-            tue_date = time.gmtime(now_ts - days_since_tue * 86400)
-            tue_reset_str = f"{tue_date.tm_year}-{tue_date.tm_mon:02d}-{tue_date.tm_mday:02d} 15:00:00"
-            tue_reset_ts = calendar.timegm(time.strptime(tue_reset_str, "%Y-%m-%d %H:%M:%S"))
-            
-            # If it is Tuesday but before 15:00, go back 7 days
-            if now_ts < tue_reset_ts:
-                tue_reset_ts -= 7 * 86400
-                
-            iso_start = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(tue_reset_ts))
-            
-            new_tracker = {
-                "friend_name": friend_name,
-                "name": profile["name"],
-                "realm": profile["realm"]["slug"],
-                "last_run_at": iso_start,
-                "weekly_count": 0
-            }
-            self.booster_config.append(new_tracker)
-            
-            # Immediate scan to pick up runs since reset
-            await self.scan_booster(new_tracker, self._session)
-            await self.save_state()
-            
-            msg = f"✅ Registered **{profile['name']}-{profile['realm']['name']}**"
-            if friend_name:
-                msg += f" for **{friend_name}**"
-            msg += "! 🚀"
-            await ctx.send(msg)
-
-    @booster.command(name="register_bulk")
-    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
-    async def booster_register_bulk(self, ctx, arg1: str, *, arg2: str = None):
-        """Register multiple characters at once, comma separated. (Admin only)"""
-        if arg2 is None:
+        # Determine friend_name and char_list
+        # If the first argument has a '-', assume it's part of a character, no friend_name
+        if "-" in args[0]:
             friend_name = "Unknown"
-            char_list = arg1
+            char_list = " ".join(args)
         else:
-            friend_name = arg1
-            char_list = arg2
+            friend_name = args[0]
+            char_list = " ".join(args[1:])
+            if not char_list:
+                return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster register [friend_name] <Name-Realm>, ...`")
+
         queries = [q.strip() for q in char_list.split(',')]
         results = []
         
@@ -1301,7 +1253,7 @@ class WoW(commands.Cog):
                 results.append(f"✅ {profile['name']}-{profile['realm']['name']}: Registered for {friend_name}")
             
             await self.save_state()
-            await ctx.send("📋 **Bulk Registration Results:**\n" + "\n".join(results))
+            await ctx.send("📋 **Registration Results:**\n" + "\n".join(results))
 
     @booster.command(name="unlink")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
