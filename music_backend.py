@@ -517,6 +517,7 @@ async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
                     # Warmup search; errors here are expected/ignored during startup
                     ydl.extract_info("ytsearch1:youtube", download=False)
                 except Exception:
+                    # Silently ignore all warmup errors
                     pass
 
     await loop.run_in_executor(_ydl_executor, do_warmup)

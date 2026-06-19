@@ -1253,8 +1253,14 @@ class WoW(commands.Cog):
 
     @booster.command(name="register_bulk")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
-    async def booster_register_bulk(self, ctx, friend_name: str, *, char_list: str):
+    async def booster_register_bulk(self, ctx, arg1: str, *, arg2: str = None):
         """Register multiple characters at once, comma separated. (Admin only)"""
+        if arg2 is None:
+            friend_name = "Unknown"
+            char_list = arg1
+        else:
+            friend_name = arg1
+            char_list = arg2
         queries = [q.strip() for q in char_list.split(',')]
         results = []
         
@@ -1296,6 +1302,38 @@ class WoW(commands.Cog):
             
             await self.save_state()
             await ctx.send("📋 **Bulk Registration Results:**\n" + "\n".join(results))
+
+    @booster.command(name="unlink")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_unlink(self, ctx, *, query: str):
+        """Remove the friend link from a character or unlinks all characters from a friend name (Admin only)."""
+        name, realm = self._parse_char_query(query)
+        
+        # Try to find by character name-realm first
+        found_char = False
+        for t in self.booster_config:
+            if t["name"].lower() == name.lower() and t["realm"].lower() == realm.lower():
+                if "friend_name" in t:
+                    del t["friend_name"]
+                found_char = True
+                break
+        
+        if found_char:
+            await self.save_state()
+            return await ctx.send(f"✅ Removed friend link for character **{name}-{realm}**.")
+
+        # If not found by char, try to find by friend_name
+        linked_count = 0
+        for t in self.booster_config:
+            if t.get("friend_name", "").lower() == query.lower():
+                del t["friend_name"]
+                linked_count += 1
+        
+        if linked_count > 0:
+            await self.save_state()
+            return await ctx.send(f"✅ Unlinked {linked_count} character(s) from friend **{query}**.")
+        
+        await ctx.send(f"❌ Could not find character or friend named **{query}**.")
 
     @booster.command(name="unregister")
     @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
