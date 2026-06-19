@@ -1040,8 +1040,10 @@ class WoW(commands.Cog):
 
         friend_data = {}
         for t in self.booster_config:
+            # Determine the effective 'friend' name to group by
+            # If no friend_name is set, default to the character's own name for grouping
             f_name = t.get("friend_name")
-            if not f_name or f_name == "Unknown":
+            if not f_name: # Checks for None or empty string
                 f_name = t["name"]
 
             if f_name not in friend_data:
@@ -1063,16 +1065,20 @@ class WoW(commands.Cog):
             if data["total"] > 0:
                 # Check if this friend group consists of a single character whose name matches the friend name
                 is_single_char_group = (
-                    len(data["characters"]) == 1 and
-                    self._parse_char_query(data["characters"][0]["name_realm"])[0].lower() == f_name.lower()
+                    len(data["chars"]) == 1 and
+                    self._parse_char_query(data["chars"][0].split('(')[0].strip())[0].lower() == f_name.lower()
                 )
 
                 if is_single_char_group:
                     # Output: "• CharName-Realm: Runs"
-                    lines.append(f"• **{data['characters'][0]['name_realm']}**: {data['characters'][0]['runs']} runs")
+                    # data["chars"][0] is "CharName-Realm (Runs)"
+                    parts = data["chars"][0].rsplit(' ', 1) # Split "CharName-Realm (Runs)" into "CharName-Realm" and "(Runs)"
+                    char_realm_part = parts[0] # "CharName-Realm"
+                    runs_part = parts[1].strip('()') # "Runs"
+                    lines.append(f"• **{char_realm_part}**: {runs_part} runs")
                 else:
                     # Output: "• FriendName: Total Runs (Char1-Realm (runs), Char2-Realm (runs))"
-                    char_parts = [char["display"] for char in data["characters"]]
+                    char_parts = [char_str for char_str in data["chars"]]
                     display = f"• **{f_name}**: {data['total']} runs"
                     if char_parts:
                         display += f" ({', '.join(char_parts)})"
@@ -1215,9 +1221,9 @@ class WoW(commands.Cog):
             return await ctx.send(f"⚠️ Usage: `{ctx.prefix}booster register [friend_name] <Name-Realm>, ...`")
 
         # Determine friend_name and char_list
-        # If the first argument has a '-', assume it's part of a character, no friend_name
+        # If the first argument has a '-', assume it's part of a character, no friend_name given
         if "-" in args[0]:
-            friend_name = "Unknown"
+            friend_name = None  # No friend_name if not explicitly provided
             char_list = " ".join(args)
         else:
             friend_name = args[0]
