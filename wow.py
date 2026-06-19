@@ -1394,8 +1394,15 @@ class WoW(commands.Cog):
     async def booster_stats(self, ctx):
         """View the current weekly boosting run counts, grouped by friend."""
         async with ctx.typing():
-            # Display cached data only; auto-tracker runs in background.
-            # Use !booster deep_scan_all to force a full refresh.
+            # Force a deep scan of recent runs to catch anything missed
+            updated = False
+            for tracker in self.booster_config:
+                if await self.scan_booster(tracker, self._session):
+                    updated = True
+
+            if updated:
+                await self.save_state()
+
             embed = self._build_booster_stats_embed()
             await ctx.send(embed=embed)
 
