@@ -33,6 +33,7 @@ _PREFETCH_DELAY_SECONDS = float(os.getenv("MUSIC_PREFETCH_DELAY", "2"))
 _CLEANUP_ON_START = os.getenv("MUSIC_CLEANUP_ON_START", "false").strip().lower() in ("1", "true", "yes", "on")
 _FAST_START_STREAMING = os.getenv("MUSIC_FAST_START_STREAMING", "false").strip().lower() in ("1", "true", "yes", "on")
 _PREFETCH_ENABLED = os.getenv("MUSIC_PREFETCH_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+_MUSIC_SEARCH_TIMEOUT = int(os.getenv("MUSIC_SEARCH_TIMEOUT", "60")) # seconds
 
 # ── Views ───────────────────────────────────────────────────────────────────
 
