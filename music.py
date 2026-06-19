@@ -679,7 +679,7 @@ class Music(commands.Cog):
                             logger.warning("Fast-start stream failed for track, falling back to download: %s", e)
                             info, audio_path = await asyncio.wait_for(
                                 search_and_download(query, download=True),
-                                timeout=45.0
+                                timeout=_MUSIC_SEARCH_TIMEOUT
                             )
 
                     st.current_info = info
