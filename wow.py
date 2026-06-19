@@ -204,9 +204,9 @@ class WoW(commands.Cog):
                                 if attempt < retries:
                                     await asyncio.sleep(delay)
             except Exception as e:
-                logger.warning(f"Request error on attempt {attempt}/{retries}: {e} — {url}")
+                logger.warning(f"Request error on attempt {attempt}/{retries}: {type(e).__name__}: {str(e)} — {url}")
                 if attempt == retries:
-                    logger.error(f"Request failed after {retries} attempts: {e}")
+                    logger.error(f"Request failed after {retries} attempts: {type(e).__name__}: {str(e)}")
                 elif attempt < retries:
                     await asyncio.sleep(delay)
         return None
