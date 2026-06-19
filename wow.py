@@ -1049,8 +1049,13 @@ class WoW(commands.Cog):
 
             count = t.get("weekly_count", 0)
             friend_data[f_name]["total"] += count
+            
+            char_display = f"{t['name']}-{t['realm']} ({count})"
             if len(friend_data[f_name]["chars"]) > 0 or f_name != t["name"]:
-                friend_data[f_name]["chars"].append(f"{t['name']} ({count})")
+                friend_data[f_name]["chars"].append(char_display)
+            else:
+                # If only one char and name matches friend, still show realm
+                friend_data[f_name]["chars"].append(char_display)
 
         sorted_friends = sorted(friend_data.items(), key=lambda x: x[1]["total"], reverse=True)
         lines = []
