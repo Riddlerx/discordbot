@@ -22,7 +22,7 @@ logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
     # Relaxed format selection to improve compatibility when specific formats are unavailable
-    "format": "bestaudio/best",
+    "format": "worstaudio/worst",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
@@ -34,7 +34,7 @@ YDL_OPTIONS_FAST = {
     "retries": 10,
     "fragment_retries": 15,
     # Download fragments in parallel — critical on high-latency links to hide RTT
-    "concurrent_fragment_downloads": 5,
+    "concurrent_fragment_downloads": 8,
     "nocheckcertificate": True,
     "youtube_include_dash_manifest": True,
     "youtube_include_hls_manifest": True,
@@ -57,18 +57,18 @@ YDL_OPTIONS_FAST = {
     "playlist_items": "1",
     "noprogress": True,
     "no_part": True,
-    # 256KB buffer — critical for high-latency (cross-Pacific) connections
+    # 512KB buffer — critical for high-latency (cross-Pacific) connections
     # The default 16KB causes FFmpeg buffer starvation and audible stuttering
-    "buffersize": 262144,
+    "buffersize": 524288,
     "sleep_interval": 0,
     "max_sleep_interval": 0,
     "outtmpl": os.path.join(TEMP_DIR, "%(id)s.%(ext)s"),
 }
 
 # 3 workers so multiple songs can be queued/prefetched without blocking each other
-_ydl_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="yt-dlp")
+_ydl_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="yt-dlp")
 # Allow 2 concurrent extractions (e.g. current + prefetch running in parallel)
-_extract_semaphore = asyncio.Semaphore(2)
+_extract_semaphore = asyncio.Semaphore(3)
 _info_cache: dict[str, tuple[float, dict]] = {}
 _info_cache_lock = asyncio.Lock()
 _inflight_queries: dict[str, asyncio.Future] = {}
