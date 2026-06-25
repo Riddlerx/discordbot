@@ -21,8 +21,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    # Relaxed format selection to improve compatibility when specific formats are unavailable
-    "format": "worstaudio/worst",
+    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
@@ -48,9 +47,8 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            # 'android_music' is often the most reliable client for audio-only extraction
-            "player_client": ["android_music"],
-            "player_skip": ["mweb"],
+            "player_client": ["web", "web_creator"],
+            "player_skip": ["webpage", "mweb"],
         }
     },
     "lazy_playlist": True,
