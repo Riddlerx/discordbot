@@ -197,6 +197,13 @@ def get_yt_dlp_auth_config() -> dict:
     return auth_options
 
 
+YDL_CLIENT_FALLBACKS = [
+    ["web", "web_creator"],
+    ["android"],
+    ["ios"],
+    ["tv"],
+]
+
 def build_ydl_options(base_options: dict) -> dict:
     auth_cfg = get_yt_dlp_auth_config()
     options = {
@@ -370,10 +377,12 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
             if not is_url_query(query) and not re.search(r"\b(audio|lyrics|song|official|music|mv|video|original|origin|cover|piano|remix)\b", query, re.I):
                 search_query = f"{query} audio"
 
-            def extract_with_options(extract_query: str, *, should_download: bool, playlist_items: str = "1"):
+            def extract_with_options(extract_query: str, *, should_download: bool, playlist_items: str = "1", player_clients: list[str] | None = None):
                 opts = build_ydl_options(YDL_OPTIONS_FAST)
                 opts["skip_download"] = not should_download
                 opts["playlist_items"] = playlist_items
+                if player_clients:
+                    opts.setdefault("extractor_args", {}).setdefault("youtube", {})["player_client"] = player_clients
                 if is_url_query(extract_query):
                     opts["default_search"] = "auto"
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -396,13 +405,47 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     return info, path
                 return info, info["url"]
 
-            def fallback_search(custom_query: str = None) -> tuple[dict, str]:
+            def try_extract(client_idx: int = 0):
+                clients = YDL_CLIENT_FALLBACKS[client_idx]
+                logger.info("Trying yt-dlp with player_client=%s query=%r", clients, query)
+                try:
+                    if is_url_query(query):
+                        info = normalize_extracted_info(
+                            extract_with_options(query, should_download=download, player_clients=clients)
+                        )
+                        return result_from_info(info)
+
+                    info = normalize_extracted_info(
+                        extract_with_options(search_query, should_download=download, player_clients=clients)
+                    )
+                    return result_from_info(info)
+                except FileNotFoundError as exc:
+                    logger.warning("yt-dlp no audio file query=%r: %s", query, exc)
+                    if is_url_query(query):
+                        raise
+                    return try_fallback_search()
+                except Exception as exc:
+                    err_msg = str(exc)
+                    if "403" in err_msg or "Forbidden" in err_msg:
+                        if client_idx < len(YDL_CLIENT_FALLBACKS) - 1:
+                            logger.warning("yt-dlp 403 with client=%s query=%r, trying next client", clients, query)
+                            return try_extract(client_idx + 1)
+                        raise
+                    if is_url_query(query):
+                        raise
+                    if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
+                        retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
+                        logger.info("Age restriction detected for %r. Retrying with: %r", query, retry_query)
+                        return try_fallback_search(custom_query=retry_query)
+                    logger.warning("yt-dlp result not playable query=%r: %s", query, exc)
+                    return try_fallback_search()
+
+            def try_fallback_search(custom_query: str = None):
                 target_query = custom_query or search_query
                 search_info = extract_with_options(f"ytsearch5:{target_query}", should_download=False, playlist_items="1:5")
                 info = first_playable_video(search_info.get("entries") if search_info else None)
                 if not info:
                     raise Exception("No playable video results found.")
-
                 video_query = info.get("webpage_url") or info.get("original_url")
                 if not video_query and info.get("ie_key") == "Youtube":
                     video_query = f"https://www.youtube.com/watch?v={info['id']}"
@@ -410,49 +453,12 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     video_query = info.get("url")
                 if not video_query:
                     raise Exception("Search result is missing a playable URL.")
-
-                info = normalize_extracted_info(extract_with_options(video_query, should_download=download))
+                info = normalize_extracted_info(
+                    extract_with_options(video_query, should_download=download)
+                )
                 return result_from_info(info)
 
-            try:
-                try:
-                    if is_url_query(query):
-                        info = normalize_extracted_info(extract_with_options(query, should_download=download))
-                        return result_from_info(info)
-
-                    info = normalize_extracted_info(extract_with_options(search_query, should_download=download))
-                    return result_from_info(info)
-                except FileNotFoundError as exc:
-                    logger.warning("First yt-dlp result did not create audio, retrying broader search query=%r: %s", query, exc)
-                    if is_url_query(query):
-                        raise
-                    return fallback_search()
-                except Exception as exc:
-                    if is_url_query(query):
-                        raise
-                    
-                    err_msg = str(exc)
-                    if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
-                        retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
-                        logger.info("Age restriction detected for %r. Retrying with: %r", query, retry_query)
-                        return fallback_search(custom_query=retry_query)
-
-                    logger.warning("First yt-dlp result was not playable, retrying broader search query=%r: %s", query, exc)
-                    return fallback_search()
-            except yt_dlp.utils.DownloadError as exc:
-                err_msg = str(exc)
-                if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
-                    if not is_url_query(query):
-                        retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
-                        logger.info("Age restriction detected (DownloadError) for %r. Retrying with: %r", query, retry_query)
-                        try:
-                            return fallback_search(custom_query=retry_query)
-                        except Exception:
-                            pass # fall through to the original error if fallback also fails
-
-                if "[DRM]" in err_msg or "DRM protected" in err_msg:
-                    raise Exception("This content is DRM protected and cannot be played directly. Try searching for the song name instead.") from exc
-                raise
+            return try_extract()
 
         async with _extract_semaphore:
             info, result_path = await loop.run_in_executor(_ydl_executor, do_extract)
