@@ -21,14 +21,12 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    "format": "bestaudio*/best",
+    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
     "no_warnings": True,
     "no_color": True,
-    "js_runtimes": {"node": {}},
-    "remote_components": ["ejs:github"],
     # More retries for high-latency / flaky connections
     "retries": 10,
     "fragment_retries": 15,
@@ -47,7 +45,6 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            "player_client": ["web", "web_creator"],
             "player_skip": ["mweb"],
         }
     },
@@ -198,10 +195,11 @@ def get_yt_dlp_auth_config() -> dict:
 
 
 YDL_CLIENT_FALLBACKS = [
-    ["web", "web_creator"],
+    [],
     ["android"],
     ["ios"],
     ["tv"],
+    ["web", "web_creator"],
 ]
 
 def build_ydl_options(base_options: dict) -> dict:
@@ -511,17 +509,13 @@ async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
     
     def do_warmup():
         opts = build_ydl_options(YDL_OPTIONS_FAST)
-        # Force download of remote components by running a search
         opts['quiet'] = True
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Just warming up the internal extractors and challenge solver
             ydl._ies = ydl._ies 
             if warmup_youtube:
                 try:
-                    # Warmup search; errors here are expected/ignored during startup
-                    ydl.extract_info("ytsearch1:youtube", download=False)
+                    ydl.extract_info("ytsearch1:test", download=False)
                 except Exception:
-                    # Silently ignore all warmup errors
                     pass
 
     await loop.run_in_executor(_ydl_executor, do_warmup)

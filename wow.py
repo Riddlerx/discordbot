@@ -19,7 +19,7 @@ REALMS = {
     "illidan": 57
 }
 
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
+STATE_FILE = "/mnt/data/discordbot-windows/bot_state.json"
 CACHE_DURATION = 1800  # 30 minutes
 
 class ItemSelectionView(discord.ui.View):
@@ -165,8 +165,8 @@ class WoW(commands.Cog):
         self._run_details_inflight[run_id] = future
         try:
             # Raider.io API is currently bugged where season=current throws a 500 error for run-details.
-            # Using the explicit season slug season-mn-1 fixes it.
-            url = f"https://raider.io/api/v1/mythic-plus/run-details?season=season-mn-1&id={run_id}"
+            # Using the explicit season slug season-mn-2 fixes it.
+            url = f"https://raider.io/api/v1/mythic-plus/run-details?season=season-mn-2&id={run_id}"
             logger.info(f"  -> Fetching details: {url}")
             result = await self.safe_get(session, url, retries=5)
             self._run_details_cache[run_id] = result  # cache None too — no retries
@@ -577,8 +577,10 @@ class WoW(commands.Cog):
             if now < last_reset_ts:
                 last_reset_ts -= 7 * 86400
 
-            CURRENT_EXPANSION_NAMES = ["Midnight", "The Midnight Expansion", "The War Within"]
-            CURRENT_EXPANSION_IDS = [501, 17, 506]
+            CURRENT_EXPANSION_NAMES = ["Midnight", "The Midnight Expansion"]
+            CURRENT_EXPANSION_IDS = [516]
+            # Season 2 raids only (Midnight S2: The Venomous Abyss + Tidebound Grotto Lair)
+            SEASON2_INSTANCE_IDS = {1320, 1317}
             weekly_bosses = {"mythic": set(), "heroic": set(), "normal": set()}
 
             for exp in raid_data.get("expansions", []):
@@ -586,6 +588,8 @@ class WoW(commands.Cog):
                 is_current = (expansion_info.get("name") in CURRENT_EXPANSION_NAMES) or (expansion_info.get("id") in CURRENT_EXPANSION_IDS)
                 if is_current:
                     for instance in exp.get("instances", []):
+                        if instance.get("instance", {}).get("id") not in SEASON2_INSTANCE_IDS:
+                            continue
                         for mode in instance.get("modes", []):
                             diff = mode["difficulty"]["type"].lower()
                             if diff in weekly_bosses:
@@ -895,14 +899,14 @@ class WoW(commands.Cog):
                             
                             same_armor_check = any(count >= 4 for count in armor_counts.values())
 
-                            # Buyer Check: player below 275 ilvl; ignore 0 (missing data)
+                            # Buyer Check: player below 320 ilvl; ignore 0 (missing data)
                             buyer_found = any(
-                                0 < m.get("items", {}).get("item_level_equipped", 0) < 275
+                                0 < m.get("items", {}).get("item_level_equipped", 0) < 320
                                 for m in roster
                             )
                             if buyer_found:
                                 is_boost = True
-                                reason = "Buyer detected (<275 ilvl)"
+                                reason = "Buyer detected (<320 ilvl)"
                             elif tanks > 1 or healers > 1:
                                 is_boost = True
                                 reason = f"Role mismatch ({tanks}T/{healers}H)"
