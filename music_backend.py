@@ -1,6 +1,6 @@
 import asyncio
-import glob
 import html as html_lib
+import glob
 import logging
 import os
 import re
@@ -21,7 +21,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 logger = logging.getLogger("discordbot.music")
 
 YDL_OPTIONS_FAST = {
-    "format": "bestaudio/best",
+    "format": "bestaudio/best[ext=mp4]/18/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
@@ -45,7 +45,7 @@ YDL_OPTIONS_FAST = {
     "proxy": None,
     "extractor_args": {
         "youtube": {
-            "player_skip": ["mweb"],
+            "player_skip": [],
         }
     },
     "lazy_playlist": True,
@@ -196,6 +196,7 @@ def get_yt_dlp_auth_config() -> dict:
 
 YDL_CLIENT_FALLBACKS = [
     [],
+    ["mweb"],
     ["android"],
     ["ios"],
     ["tv"],
@@ -424,9 +425,9 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     return try_fallback_search()
                 except Exception as exc:
                     err_msg = str(exc)
-                    if "403" in err_msg or "Forbidden" in err_msg:
+                    if "403" in err_msg or "Forbidden" in err_msg or "page needs to be reloaded" in err_msg or "not a bot" in err_msg or "format is not available" in err_msg:
                         if client_idx < len(YDL_CLIENT_FALLBACKS) - 1:
-                            logger.warning("yt-dlp 403 with client=%s query=%r, trying next client", clients, query)
+                            logger.warning("yt-dlp %s with client=%s query=%r, trying next client", exc, clients, query)
                             return try_extract(client_idx + 1)
                         raise
                     if is_url_query(query):

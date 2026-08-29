@@ -19,7 +19,7 @@ REALMS = {
     "illidan": 57
 }
 
-STATE_FILE = "/mnt/data/discordbot-windows/bot_state.json"
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
 CACHE_DURATION = 1800  # 30 minutes
 
 class ItemSelectionView(discord.ui.View):
@@ -899,26 +899,26 @@ class WoW(commands.Cog):
                             
                             same_armor_check = any(count >= 4 for count in armor_counts.values())
 
-                            # Buyer Check: player below 320 ilvl; ignore 0 (missing data)
+                            # Buyer Check: player below 300 ilvl; ignore 0 (missing data)
                             buyer_found = any(
-                                0 < m.get("items", {}).get("item_level_equipped", 0) < 320
+                                0 < m.get("items", {}).get("item_level_equipped", 0) < 300
                                 for m in roster
                             )
                             if buyer_found:
                                 is_boost = True
-                                reason = "Buyer detected (<320 ilvl)"
+                                reason = "Buyer detected (<300 ilvl)"
                             elif tanks > 1 or healers > 1:
                                 is_boost = True
                                 reason = f"Role mismatch ({tanks}T/{healers}H)"
                             elif same_armor_check:
                                 is_boost = True
                                 reason = "Gear stacking (4+ same armor)"
-                            elif efficiency <= 0.75:
+                            elif efficiency <= 0.70:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%})"
                         else:
                             # run-details unavailable (raider.io 500) — fall back to efficiency only
-                            if efficiency <= 0.75:
+                            if efficiency <= 0.70:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
                             else:
@@ -1493,6 +1493,18 @@ class WoW(commands.Cog):
             await ctx.send(f"✅ {action} **{abs(amount)}** runs for **{found_tracker['name']}-{found_tracker['realm']}**. New total: **{found_tracker['weekly_count']}**.")
         else:
             await ctx.send(f"❌ **{char_query}** is not being tracked. Check the name and realm.")
+
+    @booster.command(name="reset")
+    @commands.check(lambda ctx: ctx.author.id == 692434522532479127)
+    async def booster_reset(self, ctx):
+        """Reset all weekly tracking data so deep_scan_all re-evaluates with current thresholds (Admin only)."""
+        for tracker in self.booster_config:
+            tracker["weekly_count"] = 0
+            tracker["counted_runs"] = []
+            tracker["last_run_at"] = ""
+        self._run_details_cache = {}
+        await self.save_state()
+        await ctx.send(f"✅ Reset weekly data for **{len(self.booster_config)}** characters. Run `!booster deep_scan_all` to re-scan.")
 
 
 async def setup(bot):
