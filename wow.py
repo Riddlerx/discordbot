@@ -899,14 +899,14 @@ class WoW(commands.Cog):
                             
                             same_armor_check = any(count >= 4 for count in armor_counts.values())
 
-                            # Buyer Check: player below 300 ilvl; ignore 0 (missing data)
+                            # Buyer Check: player below 270 ilvl; ignore 0 (missing data)
                             buyer_found = any(
-                                0 < m.get("items", {}).get("item_level_equipped", 0) < 300
+                                0 < m.get("items", {}).get("item_level_equipped", 0) < 270
                                 for m in roster
                             )
                             if buyer_found:
                                 is_boost = True
-                                reason = "Buyer detected (<300 ilvl)"
+                                reason = "Buyer detected (<270 ilvl)"
                             elif tanks > 1 or healers > 1:
                                 is_boost = True
                                 reason = f"Role mismatch ({tanks}T/{healers}H)"
