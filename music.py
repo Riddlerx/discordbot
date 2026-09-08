@@ -101,6 +101,7 @@ class GuildState:
         self.current_file: str | None = None
         self.volume: float = 0.5
         self.is_loading: bool = False
+        self.load_generation: int = 0
         self.loop_mode: str = "off"
         self.current_info: dict | None = None
         self.advance_lock = asyncio.Lock()
@@ -208,6 +209,7 @@ class Music(commands.Cog):
         st.current_info = None
         st.current_file = None
         st.is_loading = False
+        st.load_generation += 1  # invalidate any in-flight !play load
         st.playback_started_at = None
         st.stream_fallback_track_id = None
         self._cancel_prefetch(st)
@@ -305,10 +307,12 @@ class Music(commands.Cog):
         if is_url:
             before_options.extend([
                 "-thread_queue_size", "16384",
-                "-reconnect", "1",
-                "-reconnect_at_eof", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "10",
+                # NOTE: -reconnect flags intentionally removed. With them, ffmpeg
+                # retries a dead stream forever, so discord.py's synchronous
+                # FFmpegPCMAudio.read() blocks the asyncio event loop indefinitely
+                # (voice heartbeat stalls, receive buffers pile up -> OOM kill).
+                # Without them, ffmpeg exits on a failed stream, read() returns
+                # empty, and the queue advances cleanly.
                 # 32MB network read buffer to absorb cross-Pacific RTT spikes
                 # without starving the audio pipeline
                 "-buffer_size", "33554432",
@@ -657,6 +661,8 @@ class Music(commands.Cog):
         st.is_loading = True
         st.current_info = info
         title = info.get('title', 'Unknown')
+        my_gen = st.load_generation + 1
+        st.load_generation = my_gen
 
         try:
             # Use local file if available, otherwise resolve a stream/file for playback.
@@ -693,6 +699,13 @@ class Music(commands.Cog):
 
             st.current_file = audio_path
 
+            # If skip/!play superseded this queued-track load, do not start playback.
+            # Note: skip()/_advance already manage is_loading for the new load, so
+            # do NOT clear it here (that would clobber a newer in-flight load).
+            if my_gen != st.load_generation:
+                logger.info("Queued track load superseded guild=%s (gen %d != %d); discarding", guild.id, my_gen, st.load_generation)
+                return
+
             if guild.voice_client:
                 loop_status = f" (Loop: {st.loop_mode})" if st.loop_mode != "off" else ""
 
@@ -721,7 +734,10 @@ class Music(commands.Cog):
             st.current_title = None
             self._advance(guild.id)
         finally:
-            st.is_loading = False
+            # Only clear the loading flag if this load is still the active one;
+            # a superseded load must not clobber a newer load's is_loading state.
+            if st.load_generation == my_gen:
+                st.is_loading = False
 
     def _schedule_prefetch(self, guild_ref):
         guild_id = guild_ref.guild.id if hasattr(guild_ref, "guild") else guild_ref
@@ -963,6 +979,11 @@ class Music(commands.Cog):
                 return
 
             # This block used to have `searching_msg = await ctx.send(...)`, which is now handled by ctx.typing()
+            # Mark as loading from the START (not after search) so that a second !play or !skip
+            # during the ~10s search doesn't race a parallel search or lose track of the pending load.
+            my_gen = st.load_generation + 1
+            st.load_generation = my_gen
+            st.is_loading = True
             voice_start = time.perf_counter()
             voice_task = asyncio.create_task(self._ensure_voice(ctx))
             try:
@@ -1027,6 +1048,18 @@ class Music(commands.Cog):
                     time.perf_counter() - voice_start,
                 )
 
+                # If a skip or another play superseded this load (bumped the generation),
+                # discard this result instead of playing/queueing a stale track.
+                # skip()/!stop already manage is_loading for any replacement load,
+                # so do NOT clear it here (that would clobber a newer load).
+                if my_gen != st.load_generation:
+                    logger.info("Play load superseded guild=%s query=%r (gen %d != %d); discarding", ctx.guild.id, query, my_gen, st.load_generation)
+                    return
+
+                # Release the search-phase loading flag so the busy re-check below
+                # reflects real playback (this fresh result should play immediately).
+                st.is_loading = False
+
                 # Re-check busy status after potentially slow resolution to avoid race conditions
                 vc = ctx.voice_client
                 is_busy_now = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
@@ -1065,6 +1098,7 @@ class Music(commands.Cog):
             except Exception as e:
                 if not voice_task.done():
                     voice_task.cancel()
+                st.is_loading = False  # don't leave the guild in a stuck "loading" state
                 logger.exception("Error loading track guild=%s query=%r: %s", ctx.guild.id, query, e)
                 return await ctx.send(f"\u274c Could not load track: {e}")
             
@@ -1138,9 +1172,15 @@ class Music(commands.Cog):
                 # If we were loading, stop loading the current one as well
                 if st.is_loading:
                     st.is_loading = False
+                    st.load_generation += 1  # invalidate any in-flight !play load
                 
                 await ctx.send(f"\u23ed\ufe0f Skipped **{skipped_from_queue + 1}** tracks.")
             else:
+                # Single skip during a pending load must also invalidate it,
+                # otherwise the in-flight !play resolves and plays a stale track.
+                if st.is_loading:
+                    st.is_loading = False
+                    st.load_generation += 1
                 await ctx.send("\u23ed\ufe0f Skipped.")
 
             # Stop current playback (this triggers _advance via the 'after' callback)
