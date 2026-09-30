@@ -977,26 +977,46 @@ class WoW(commands.Cog):
             await asyncio.sleep(1800) # Run every 30 mins
 
     async def weekly_report_checker(self):
-        """Check for WoW Tuesday reset and post the weekly booster summary."""
+        """Post the weekly booster summary exactly at WoW reset: Tuesday 15:00 UTC (00:00 JST Wednesday)."""
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
-                # WoW US Reset is Tuesday 15:00 UTC (8:00 AM PST)
-                now = time.gmtime()
-                # 1 = Tuesday. Run only on Tuesday, past 15:00 UTC
-                if now.tm_wday == 1 and now.tm_hour >= 15:
-                    today_iso = f"{now.tm_year}-{now.tm_mon:02d}-{now.tm_mday:02d}"
-                    if self.last_weekly_report != today_iso:
-                        await self.send_weekly_booster_report()
-                        self.last_weekly_report = today_iso
-                        # Reset counts for all characters
-                        for tracker in self.booster_config:
-                            tracker["weekly_count"] = 0
-                        await self.save_state()
+                now_ts = time.time()
+                next_reset_ts = self._next_tuesday_15utc(now_ts)
+                event_iso = time.strftime("%Y-%m-%d", time.gmtime(next_reset_ts))
+
+                if self.last_weekly_report == event_iso:
+                    # Already fired for this reset; wait for the next one.
+                    await asyncio.sleep(max(0.0, next_reset_ts - time.time()) + 600)
+                    continue
+
+                delay = next_reset_ts - now_ts
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+                if self.last_weekly_report == event_iso:
+                    await asyncio.sleep(600)
+                    continue
+
+                await self.send_weekly_booster_report()
+                self.last_weekly_report = event_iso
+                # Reset counts for all characters
+                for tracker in self.booster_config:
+                    tracker["weekly_count"] = 0
+                await self.save_state()
             except Exception as e:
                 logger.error("Error in weekly report checker: %s", e)
-            
-            await asyncio.sleep(3600) # Check every hour
+                await asyncio.sleep(3600)
+
+    @staticmethod
+    def _next_tuesday_15utc(now_ts: float) -> float:
+        """Timestamp of the next Tuesday 15:00 UTC (WoW US reset, 00:00 JST)."""
+        t = time.gmtime(now_ts)
+        days_since_tue = (t.tm_wday - 1) % 7  # tm_wday: Mon=0 ... Tue=1 ... Sun=6
+        reset_ts = calendar.timegm((t.tm_year, t.tm_mon, t.tm_mday, 15, 0, 0)) - days_since_tue * 86400
+        if reset_ts <= now_ts:
+            reset_ts += 7 * 86400
+        return reset_ts
 
     async def send_weekly_booster_report(self):
         """Send this week's booster stats to the guild channel."""
