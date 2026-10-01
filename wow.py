@@ -913,12 +913,12 @@ class WoW(commands.Cog):
                             elif same_armor_check:
                                 is_boost = True
                                 reason = "Gear stacking (4+ same armor)"
-                            elif efficiency <= 0.65:
+                            elif efficiency <= 0.60:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%})"
                         else:
                             # run-details unavailable (raider.io 500) — fall back to efficiency only
-                            if efficiency <= 0.65:
+                            if efficiency <= 0.60:
                                 is_boost = True
                                 reason = f"Fast clear ({efficiency:.1%}) [details unavailable]"
                             else:
