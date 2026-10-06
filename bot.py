@@ -1,3 +1,4 @@
+import inspect
 import os
 import random
 import discord
@@ -54,33 +55,61 @@ bot = commands.Bot(
 @bot.command(name="help")
 async def help_command(ctx):
     """Display the list of available commands."""
-    msg = (
-        "**Commands List**\n\n"
-        "🎵 **Music**\n"
-        "`!play url/search` - Play a song\n"
-        "`!playnext` - Add song to top of queue\n"
-        "`!skip` - Skip current track\n"
-        "`!pause`/`!resume` - Toggle playback\n"
-        "`!loop` - Cycle loop: off/song/queue\n"
-        "`!volume <1-100>` - Set audio level\n"
-        "`!q` - Show the queue\n"
-        "`!np` - Show current song\n"
-        "`!remove <index>` - Remove from queue\n"
-        "`!stop` - Stop & leave channel\n\n"
-        "🧹 **Management**\n"
-        "`!clear` - Empty the queue\n"
-        "`!roll <max>` - Roll 1-100 (or max)\n"
-        "`!coin` - Flip a coin\n\n"
-        "🤖 **AI**\n"
-        "`!ask <prompt>` - Ask the AI a question\n"
-        "`!draw <prompt>` - Generate an image from a prompt\n\n"
-        "💰 **Economy & WoW**\n"
-        "`!price item[:realm]` - Check WoW AH\n"
-        "`!lookup name[-realm]` - WoW character stats\n"
-        "`!guildvault` - Show guild leaderboard\n"
-        "`!booster` - Weekly m+ run tracking"
-    )
-    await ctx.send(msg)
+    COG_LABELS = {
+        "Music": "🎵 **Music**",
+        "AIChat": "🤖 **AI**",
+        "WoW": "💰 **Economy & WoW**",
+        None: "🧹 **General**",
+    }
+
+    groups = {}
+    for cmd in sorted(bot.walk_commands(), key=lambda c: c.qualified_name):
+        if cmd.hidden:
+            continue
+        # Evaluate command-level checks only (skips cog checks like the music
+        # channel restriction). Admin-only commands are hidden for non-admins.
+        allowed = True
+        for check in cmd.checks:
+            try:
+                result = check(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:
+                continue
+            if not result:
+                allowed = False
+                break
+        if not allowed:
+            continue
+        sig = f" {cmd.signature}" if cmd.signature else ""
+        short = (cmd.help or "").strip().splitlines()[0] if cmd.help else ""
+        line = f"`!{cmd.qualified_name}{sig}`"
+        if short:
+            line += f" - {short}"
+        groups.setdefault(cmd.cog_name, []).append(line)
+
+    order = ["Music", "AIChat", "WoW", None]
+    parts = ["**Commands List**", ""]
+    for cog in order:
+        cmds = groups.pop(cog, None)
+        if not cmds:
+            continue
+        parts.append(COG_LABELS.get(cog, f"**{cog}**"))
+        parts.extend(cmds)
+        parts.append("")
+    for cog, cmds in groups.items():
+        parts.append(f"**{cog or 'Other'}**")
+        parts.extend(cmds)
+        parts.append("")
+
+    chunk = ""
+    for line in parts:
+        if len(chunk) + len(line) + 1 > 1900:
+            await ctx.send(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk.strip():
+        await ctx.send(chunk)
 
 def ensure_voice_dependencies() -> None:
     """Check for Opus and Davey libraries required for Discord voice."""
