@@ -195,7 +195,10 @@ def get_yt_dlp_auth_config() -> dict:
 
 
 YDL_CLIENT_FALLBACKS = [
-    [],
+    # NOTE: an empty player_client list (yt-dlp's default client selection) was
+    # tried first and reliably failed on this datacenter IP with "The page needs
+    # to be reloaded", costing ~3.5s on every single search before falling back.
+    # mweb is the client that reliably works here, so try it first.
     ["mweb"],
     ["android"],
     ["ios"],

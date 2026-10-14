@@ -1001,7 +1001,10 @@ class Music(commands.Cog):
                     await ctx.send(f"\U0001f4cb Added **{len(playlist_tracks[:50])}** tracks from Spotify.")
                 else:
                     try:
-                        queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
+                        # 20s, not 8: a real resolve takes ~11s here, so the old
+                        # timeout fired, queued a bare title, and then forced a
+                        # second full yt-dlp search when the track played.
+                        queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=20)
                         queued_info['original_url'] = query
                     except Exception as exc:
                         logger.warning("Queue metadata resolve failed guild=%s query=%r: %s", ctx.guild.id, query, exc)
@@ -1178,7 +1181,8 @@ class Music(commands.Cog):
                     query = playlist_tracks[0]
 
             try:
-                queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=8)
+                # See note in play(): 8s was too short and caused a duplicate search.
+                queued_info = await asyncio.wait_for(resolve_track_info(query), timeout=20)
                 queued_info['original_url'] = query
             except Exception:
                 queued_info = {
