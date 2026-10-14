@@ -301,6 +301,24 @@ def is_url_query(query: str) -> bool:
     return query.startswith(("http://", "https://"))
 
 
+def _playable_reject_reason(info: dict | None) -> str:
+    """Why is_playable_video_info() rejected this entry? For logging only."""
+    if not info:
+        return "entry is None"
+    if not info.get("id"):
+        return "missing id"
+    if info.get("_type") in {"channel", "playlist", "multi_video"}:
+        return f"type={info.get('_type')!r}"
+    video_id = str(info.get("id", ""))
+    if info.get("channel_id") == info.get("id") and video_id.startswith("UC"):
+        return "id == channel_id (channel, not video)"
+    if video_id.startswith("UC") and not info.get("duration"):
+        return "UC-prefixed id with no duration"
+    if not (info.get("url") or info.get("webpage_url") or info.get("original_url")):
+        return "no url/webpage_url/original_url"
+    return "unknown"
+
+
 def is_playable_video_info(info: dict | None) -> bool:
     if not info or not info.get("id"):
         return False
@@ -442,7 +460,7 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     logger.warning("yt-dlp result not playable query=%r: %s", query, exc)
                     return try_fallback_search(clients=clients)
 
-            def try_fallback_search(custom_query: str = None, clients: list[str] | None = None):
+            def try_fallback_search(custom_query: str = None, clients: list[str] | None = None, client_idx: int = 0):
                 target_query = custom_query or search_query
                 # Must pass the same player client: omitting it falls back to
                 # yt-dlp's default client, which is blocked on this datacenter IP
@@ -453,8 +471,25 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     playlist_items="1:5",
                     player_clients=clients,
                 )
-                info = first_playable_video(search_info.get("entries") if search_info else None)
+                entries = search_info.get("entries") if search_info else None
+                info = first_playable_video(entries)
                 if not info:
+                    # Log why each candidate was rejected; this is opaque otherwise.
+                    sample = [e for e in (entries or []) if e][:5]
+                    if not sample:
+                        logger.warning("yt-dlp search returned no entries query=%r client=%s", target_query, clients)
+                    else:
+                        reasons = [f"{e.get('id') or e.get('title')!r}: {_playable_reject_reason(e)}" for e in sample]
+                        logger.warning(
+                            "yt-dlp search returned %d entries, none playable query=%r client=%s | %s",
+                            len(entries or []), target_query, clients, "; ".join(reasons),
+                        )
+                    # This client produced nothing usable; try the next one before
+                    # giving up, since some clients return unusable entries for a query.
+                    if client_idx < len(YDL_CLIENT_FALLBACKS) - 1:
+                        nxt = YDL_CLIENT_FALLBACKS[client_idx + 1]
+                        logger.warning("No playable results with client=%s query=%r, trying next client %s", clients, target_query, nxt)
+                        return try_fallback_search(custom_query=custom_query, clients=nxt, client_idx=client_idx + 1)
                     raise Exception("No playable video results found.")
                 video_query = info.get("webpage_url") or info.get("original_url")
                 if not video_query and info.get("ie_key") == "Youtube":
