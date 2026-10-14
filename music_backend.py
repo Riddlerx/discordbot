@@ -425,7 +425,7 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     logger.warning("yt-dlp no audio file query=%r: %s", query, exc)
                     if is_url_query(query):
                         raise
-                    return try_fallback_search()
+                    return try_fallback_search(clients=clients)
                 except Exception as exc:
                     err_msg = str(exc)
                     if "403" in err_msg or "Forbidden" in err_msg or "page needs to be reloaded" in err_msg or "not a bot" in err_msg or "format is not available" in err_msg:
@@ -438,13 +438,21 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                     if "Sign in to confirm your age" in err_msg or "confirm your age" in err_msg:
                         retry_query = f"{query} lyrics" if "lyrics" not in query.lower() else f"{query} audio"
                         logger.info("Age restriction detected for %r. Retrying with: %r", query, retry_query)
-                        return try_fallback_search(custom_query=retry_query)
+                        return try_fallback_search(custom_query=retry_query, clients=clients)
                     logger.warning("yt-dlp result not playable query=%r: %s", query, exc)
-                    return try_fallback_search()
+                    return try_fallback_search(clients=clients)
 
-            def try_fallback_search(custom_query: str = None):
+            def try_fallback_search(custom_query: str = None, clients: list[str] | None = None):
                 target_query = custom_query or search_query
-                search_info = extract_with_options(f"ytsearch5:{target_query}", should_download=False, playlist_items="1:5")
+                # Must pass the same player client: omitting it falls back to
+                # yt-dlp's default client, which is blocked on this datacenter IP
+                # ("The page needs to be reloaded") and returns nothing playable.
+                search_info = extract_with_options(
+                    f"ytsearch5:{target_query}",
+                    should_download=False,
+                    playlist_items="1:5",
+                    player_clients=clients,
+                )
                 info = first_playable_video(search_info.get("entries") if search_info else None)
                 if not info:
                     raise Exception("No playable video results found.")
@@ -456,7 +464,7 @@ async def search_and_download(query: str, *, refresh: bool = False, download: bo
                 if not video_query:
                     raise Exception("Search result is missing a playable URL.")
                 info = normalize_extracted_info(
-                    extract_with_options(video_query, should_download=download)
+                    extract_with_options(video_query, should_download=download, player_clients=clients)
                 )
                 return result_from_info(info)
 
@@ -514,6 +522,9 @@ async def warmup_extractors(*, warmup_youtube: bool, delay_seconds: int = 5):
     def do_warmup():
         opts = build_ydl_options(YDL_OPTIONS_FAST)
         opts['quiet'] = True
+        # Use the same client as real searches; the default one is blocked from
+        # this IP and just logs a bogus "page needs to be reloaded" at startup.
+        opts.setdefault("extractor_args", {}).setdefault("youtube", {})["player_client"] = YDL_CLIENT_FALLBACKS[0]
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl._ies = ydl._ies 
             if warmup_youtube:
