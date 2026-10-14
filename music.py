@@ -313,9 +313,10 @@ class Music(commands.Cog):
                 # (voice heartbeat stalls, receive buffers pile up -> OOM kill).
                 # Without them, ffmpeg exits on a failed stream, read() returns
                 # empty, and the queue advances cleanly.
-                # 32MB network read buffer to absorb cross-Pacific RTT spikes
-                # without starving the audio pipeline
-                "-buffer_size", "33554432",
+                # NOTE: no -buffer_size here — that flag is not an http/https input
+                # option (it only exists for RTP/UDP). Passing it makes ffmpeg abort
+                # with "Option buffer_size not found" and exit code 8, which kills
+                # every streamed track outright.
             ])
             auth_cfg = get_yt_dlp_auth_config()
             cookiefile = auth_cfg.get("cookiefile")
@@ -383,11 +384,19 @@ class Music(commands.Cog):
         announce_text: str | None = None,
         announce_embed: discord.Embed | None = None,
         seek_seconds: int = 0,
+        my_gen: int | None = None,
     ):
         st = self.state(guild.id)
         vc = guild.voice_client
         if not vc or not vc.is_connected():
             raise RuntimeError("Voice client is not connected.")
+
+        # Every playback owns a generation. The after-callback checks it so a
+        # superseded player cannot advance the queue over the track that
+        # replaced it (the voice-recovery cascade that OOM-killed the 1GB VM).
+        if my_gen is None:
+            my_gen = st.load_generation + 1
+            st.load_generation = my_gen
 
         source = self._create_audio_source(guild.id, audio_path, st.volume, seek_seconds=seek_seconds)
         title = info.get("title", "Unknown")
@@ -416,7 +425,11 @@ class Music(commands.Cog):
             seek_seconds,
             st.volume,
         )
-        vc.play(source, after=self._make_after_callback(guild.id))
+        # Tie the after-callback to this player's generation. When a later
+        # _start_playback replaces this player, discord.py still fires this
+        # (stale) callback; without the guard it would call _advance() and
+        # skip the newly-started track.
+        vc.play(source, after=self._make_after_callback(guild.id, my_gen))
         if _PREFETCH_ENABLED and not _FAST_START_STREAMING:
             self._schedule_prefetch(guild.id)
             if audio_path.startswith("http"):
@@ -433,72 +446,87 @@ class Music(commands.Cog):
             if vc and vc.is_connected() and (vc.is_playing() or vc.is_paused()):
                 return
 
-            if not st.current_info and not st.queue:
-                return
+            # Hold advance_lock for the whole recovery so _advance_async cannot
+            # start the next queued track while we resume the current one. Without
+            # this, a track ending (after-callback -> _advance) races a voice drop
+            # and both call _start_playback, spawning two full ffmpeg processes for
+            # one transition. On a 1GB VM that duplication is what tips it into
+            # an OOM kill.
+            async with st.advance_lock:
+                return await self._recover_voice_connection_locked(guild, st, reason=reason)
 
-            if st.last_voice_channel_id is None:
-                logger.warning("Cannot recover voice guild=%s: no saved voice channel", guild_id)
-                return
+    async def _recover_voice_connection_locked(self, guild: discord.Guild, st: GuildState, *, reason: str):
+        """Resume playback after a voice drop. Caller must hold advance_lock."""
+        guild_id = guild.id
+        vc = guild.voice_client
 
-            voice_channel = guild.get_channel(st.last_voice_channel_id)
-            if not isinstance(voice_channel, discord.VoiceChannel):
-                logger.warning(
-                    "Cannot recover voice guild=%s: channel_id=%s not found",
-                    guild_id,
-                    st.last_voice_channel_id,
+        if not st.current_info and not st.queue:
+            return
+
+        if st.last_voice_channel_id is None:
+            logger.warning("Cannot recover voice guild=%s: no saved voice channel", guild_id)
+            return
+
+        voice_channel = guild.get_channel(st.last_voice_channel_id)
+        if not isinstance(voice_channel, discord.VoiceChannel):
+            logger.warning(
+                "Cannot recover voice guild=%s: channel_id=%s not found",
+                guild_id,
+                st.last_voice_channel_id,
+            )
+            return
+
+        logger.warning(
+            "Attempting voice recovery guild=%s reason=%s current_track=%s queue_len=%s",
+            guild_id,
+            reason,
+            track_label(st.current_info),
+            len(st.queue),
+        )
+        if not await self._connect_to_voice_channel(guild, voice_channel):
+            return
+
+        text_channel = self._get_text_channel(guild, st)
+        if st.current_info and st.current_file and (st.current_file.startswith("http") or os.path.exists(st.current_file)):
+            seek_seconds = 0
+            if st.playback_started_at is not None:
+                seek_seconds = max(0, int(time.monotonic() - st.playback_started_at - 2))
+            try:
+                await self._start_playback(
+                    guild,
+                    clone_info(st.current_info),
+                    audio_path=st.current_file,
+                    announce_channel=text_channel,
+                    announce_text="⚠️ Voice connection dropped. Reconnected and resumed the current track.",
+                    seek_seconds=seek_seconds,
                 )
                 return
+            except Exception as exc:
+                logger.exception(
+                    "Failed to resume current track guild=%s track=%s: %s",
+                    guild_id,
+                    track_label(st.current_info),
+                    exc,
+                )
 
-            logger.warning(
-                "Attempting voice recovery guild=%s reason=%s current_track=%s queue_len=%s",
-                guild_id,
-                reason,
-                track_label(st.current_info),
-                len(st.queue),
-            )
-            if not await self._connect_to_voice_channel(guild, voice_channel):
-                return
-
-            text_channel = self._get_text_channel(guild, st)
-            if st.current_info and st.current_file and (st.current_file.startswith("http") or os.path.exists(st.current_file)):
-                seek_seconds = 0
-                if st.playback_started_at is not None:
-                    seek_seconds = max(0, int(time.monotonic() - st.playback_started_at - 2))
-                try:
-                    await self._start_playback(
-                        guild,
-                        clone_info(st.current_info),
-                        audio_path=st.current_file,
-                        announce_channel=text_channel,
-                        announce_text="⚠️ Voice connection dropped. Reconnected and resumed the current track.",
-                        seek_seconds=seek_seconds,
-                    )
-                    return
-                except Exception as exc:
-                    logger.exception(
-                        "Failed to resume current track guild=%s track=%s: %s",
-                        guild_id,
-                        track_label(st.current_info),
-                        exc,
-                    )
-
-            if st.queue:
-                next_info = st.queue.popleft()
-                try:
-                    await self._play_track_for_guild(
-                        guild,
-                        next_info,
-                        text_channel=text_channel,
-                        ensure_voice=False,
-                        status_message="⚠️ Voice connection dropped. Reconnected and continuing with the queue.",
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Failed to continue queue after reconnect guild=%s next_track=%s: %s",
-                        guild_id,
-                        track_label(next_info),
-                        exc,
-                    )
+        if st.queue:
+            next_info = st.queue.popleft()
+            try:
+                await self._play_track_for_guild(
+                    guild,
+                    next_info,
+                    text_channel=text_channel,
+                    ensure_voice=False,
+                    status_message="⚠️ Voice connection dropped. Reconnected and continuing with the queue.",
+                    auto_advance_on_error=False,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Failed to continue queue after reconnect guild=%s next_track=%s: %s",
+                    guild_id,
+                    track_label(next_info),
+                    exc,
+                )
 
     async def _voice_watchdog(self):
         try:
@@ -643,8 +671,14 @@ class Music(commands.Cog):
         text_channel=None,
         ensure_voice: bool = True,
         status_message: str | None = None,
+        auto_advance_on_error: bool = True,
     ):
-        """Start playing a track. Uses cached file or fast stream URL."""
+        """Start playing a track. Uses cached file or fast stream URL.
+
+        auto_advance_on_error=False is used when the caller already holds
+        advance_lock (recovery path) — calling _advance() there would just queue
+        an _advance_async that blocks on the same lock until we return.
+        """
         st = self.state(guild.id)
 
         if ensure_voice:
@@ -724,15 +758,18 @@ class Music(commands.Cog):
                     announce_channel=text_channel,
                     announce_text=status_message,
                     announce_embed=embed,
+                    my_gen=my_gen,
                 )
             else:
                 st.current_title = None
-                self._advance(guild.id)
+                if auto_advance_on_error:
+                    self._advance(guild.id)
         except Exception as exc:
             if text_channel:
                 await text_channel.send(f"\u274c Playback failed: {exc}")
             st.current_title = None
-            self._advance(guild.id)
+            if auto_advance_on_error:
+                self._advance(guild.id)
         finally:
             # Only clear the loading flag if this load is still the active one;
             # a superseded load must not clobber a newer load's is_loading state.
@@ -809,24 +846,41 @@ class Music(commands.Cog):
             if st.prefetch_task is current_task:
                 st.prefetch_task = None
 
-    def _make_after_callback(self, guild_id: int):
+    def _make_after_callback(self, guild_id: int, my_gen: int):
         def _after(error):
-            if error:
-                logger.warning("Voice playback error guild=%s: %s", guild_id, error)
-            else:
-                logger.info("Playback finished guild=%s", guild_id)
-            gc.collect() # Reclaim memory from the finished stream
-            asyncio.run_coroutine_threadsafe(self._handle_after(guild_id, error), self.bot.loop)
+            # Discord.py runs this on the ffmpeg reader thread, so it only reads
+            # the int and schedules the real work on the event loop.
+            asyncio.run_coroutine_threadsafe(
+                self._handle_after(guild_id, error, my_gen), self.bot.loop
+            )
         return _after
 
-    async def _handle_after(self, guild_id: int, error):
+    async def _handle_after(self, guild_id: int, error, my_gen: int):
         guild = self.bot.get_guild(guild_id)
         vc = guild.voice_client if guild else None
+        st = self.state(guild_id)
+
+        # If the generation moved on, this player was replaced (e.g. voice
+        # recovery resumed the track, or !skip started the next one). Its
+        # callback is stale — advancing here would skip the live track and
+        # spawn a competing ffmpeg process.
+        if my_gen != st.load_generation:
+            logger.info(
+                "Ignoring stale playback callback guild=%s (gen %d != %d)",
+                guild_id, my_gen, st.load_generation,
+            )
+            gc.collect()
+            return
+
+        if error:
+            logger.warning("Voice playback error guild=%s: %s", guild_id, error)
+        else:
+            logger.info("Playback finished guild=%s", guild_id)
+        gc.collect() # Reclaim memory from the finished stream
+
         if error and (vc is None or not vc.is_connected()):
             await self._recover_voice_connection(guild_id, reason=f"playback error: {error}")
             return
-
-        st = self.state(guild_id)
         played_for = time.monotonic() - st.playback_started_at if st.playback_started_at else None
         current_id = st.current_info.get("id") if st.current_info else None
         if (
