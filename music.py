@@ -1029,7 +1029,15 @@ class Music(commands.Cog):
                         embed.add_field(name="Duration", value=f"{m:d}:{s:02d}", inline=True)
                     await ctx.send(embed=embed)
 
-                if not is_busy:
+                # Re-check live state instead of trusting the snapshot from the
+                # top of this block: resolve_track_info() above can take ~15s, and
+                # the current track may have been skipped/ended meanwhile. With the
+                # stale value we would skip _advance() and leave the freshly
+                # queued song sitting there forever.
+                vc = ctx.voice_client
+                still_busy = vc and (vc.is_playing() or vc.is_paused() or st.is_loading)
+                if not still_busy:
+                    logger.info("Queue branch starting playback immediately guild=%s (nothing playing)", ctx.guild.id)
                     self._advance(ctx.guild.id)
                 elif _PREFETCH_ENABLED and not _FAST_START_STREAMING:
                     self._schedule_prefetch(ctx)
