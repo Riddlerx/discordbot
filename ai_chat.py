@@ -19,14 +19,20 @@ class AIChat(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_key = os.getenv("GEMINI_API_KEY")
-        # Prioritizing 2.5 models because they have the 'Search Grounding' quota (1.5K).
-        # Gemini 3.x models currently have a Search Grounding limit of 0 in this project.
+        self.tavily_key = os.getenv("TAVILY_API_KEY")  # optional; falls back to free keyless mode
+        # Google deprecated gemini-2.5-flash (requests auto-route to gemini-3.5-flash-lite
+        # from Dec 1, 2026) and gemini-3.5-flash (auto-routes to gemini-3.6-flash),
+        # so the list now uses current models.
+        # Note: Gemini 3.x models have a Search Grounding quota of 0 on the free tier;
+        # gemini-2.5-flash-lite is kept last as a legacy Search Grounding fallback.
         self.models = [
-            "gemini-2.5-flash",      # Has Search Grounding (1.5K)
-            "gemini-2.5-flash-lite", # Has Search Grounding (1.5K)
-            "gemini-3.1-flash-lite", # High chat quota (500), use as fallback
-            "gemini-3.5-flash"       # Backup quality model
+            "gemini-3.6-flash",       # Current quality model (replacement for 3.5-flash)
+            "gemini-3.5-flash-lite",  # Google's official replacement for 2.5-flash
+            "gemini-3.1-flash-lite",  # High chat quota, fast fallback
+            "gemini-2.5-flash-lite"   # Legacy Search Grounding fallback
         ]
+        # Fast, cheap model for low-latency tasks (Smart Say)
+        self.fast_model = "gemini-3.1-flash-lite"
         
         # Simple LRU cache for responses
         self.cache: Dict[str, str] = OrderedDict()
@@ -46,7 +52,7 @@ class AIChat(commands.Cog):
                     "you MUST use the 'lookup_wow_character' tool. If the data shows they are undergeared "
                     "or have low progress, feel free to give them a friendly, witty roast or tease them about it. "
                     "When asked about the WoW Token price, use the 'lookup_wow_token' tool. "
-                    "For general real-time information like weather, news, or current events, use the Google Search tool. "
+                    "For general real-time information like weather, news, or current events, use the 'web_search' tool. "
                     "Do NOT tell the user you are going to search; just use the tools and wait for results. "
                     "Provide a detailed and engaging final answer based on the tools' output. "
                     "Respond in the same language as the user."
@@ -54,15 +60,17 @@ class AIChat(commands.Cog):
                 "temperature": 0.8,
                 "max_output_tokens": 4096,
             }
-            self.wow_config = types.GenerateContentConfig(
+            # All tools are regular function calls now, so they can be combined
+            # in a single config (Google Search grounding could not be combined
+            # with other tools, which is why there used to be two configs).
+            self.config = types.GenerateContentConfig(
                 **self.common_config,
-                tools=[self.lookup_wow_character, self.lookup_wow_token]
+                tools=[self.lookup_wow_character, self.lookup_wow_token, self.web_search]
             )
-            self.search_config = types.GenerateContentConfig(
-                **self.common_config,
-                tools=[types.Tool(google_search=types.GoogleSearch())]
+            logger.info(
+                "Gemini AI configured with WoW and web_search tools (Tavily: %s).",
+                "API key" if self.tavily_key else "keyless fallback",
             )
-            logger.info("Gemini AI configured with split WoW and Search tools.")
         else:
             logger.warning("GEMINI_API_KEY not found. AI chat will be disabled.")
 
@@ -159,6 +167,55 @@ class AIChat(commands.Cog):
         
         return f"Character '{name}' was not found on any common realms. Please specify the realm (e.g., 'Name-Realm')."
 
+    async def web_search(self, query: str) -> str:
+        """
+        Search the web for current, real-time information such as weather, news,
+        live scores, prices, or anything that may have changed recently.
+        Use this whenever the user asks about current events or real-time data.
+
+        Args:
+            query: The search query to look up on the web.
+        """
+        logger.info("Tool Call: web_search(query=%s)", query)
+        if not self._session:
+            return "Web search is unavailable right now. Please try again later."
+
+        # Use the user's Tavily key if set, otherwise Tavily's free keyless mode
+        headers = {"Authorization": f"Bearer {self.tavily_key}"} if self.tavily_key else {"X-Tavily-Access-Mode": "keyless"}
+        payload = {
+            "query": query,
+            "search_depth": "basic",
+            "max_results": 5,
+        }
+
+        try:
+            async with self._session.post(
+                "https://api.tavily.com/search",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("Tavily search failed (%d): %s", resp.status, body[:300])
+                    return "Web search failed. Please try again later."
+                data = await resp.json()
+        except Exception as e:
+            logger.warning("Tavily search error: %s", e)
+            return "Web search failed. Please try again later."
+
+        results = data.get("results") or []
+        if not results:
+            return "No web search results found."
+
+        lines = []
+        for r in results:
+            title = r.get("title", "Untitled")
+            url = r.get("url", "")
+            content = (r.get("content") or "").strip()
+            lines.append(f"- {title}\n  URL: {url}\n  {content}")
+        return "Web search results:\n" + "\n".join(lines)
+
     def _chunk_text(self, text: str, limit: int = 1990) -> list[str]:
         """Safely split long messages without cutting words in half."""
         chunks = []
@@ -175,7 +232,7 @@ class AIChat(commands.Cog):
         return chunks
 
     async def _call_gemini(self, prompt: str, user_id: Optional[int] = None, image_parts: Optional[list] = None) -> str:
-        """Call the Gemini API with fallback logic and dynamic tool selection."""
+        """Call the Gemini API with model fallback logic."""
         # Check cache first if no user_id (not a chat context)
         if not user_id:
             cache_key = prompt.strip().lower()
@@ -184,15 +241,6 @@ class AIChat(commands.Cog):
                 val = self.cache.pop(cache_key)
                 self.cache[cache_key] = val
                 return val
-
-        # Determine tool priority based on keywords
-        p_lower = prompt.lower()
-        # WoW config now handles both character lookups AND token prices
-        is_wow = any(k in p_lower for k in ["wow", "character", "realm", "level", "stats", "gear", "guild", "token", "price"])
-        
-        # Decide which config to try first
-        primary_config = self.wow_config if is_wow else self.search_config
-        secondary_config = self.search_config if is_wow else self.wow_config
 
         # Build contents array with history
         history = self.chat_histories.get(user_id, []) if user_id else []
@@ -206,47 +254,43 @@ class AIChat(commands.Cog):
 
         # Try models in order
         for i, model_name in enumerate(self.models):
-            for config_to_use in [primary_config, secondary_config]:
-                logger.debug("Prompting %s with %s tools: %s", model_name, "WoW" if config_to_use == self.wow_config else "Search", prompt)
-                try:
-                    response = await self.client.aio.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=config_to_use
-                    )
-                    
-                    if not response.text:
-                        continue
-                    
-                    if user_id:
-                        history.append({"role": "user", "parts": [{"text": prompt}]})
-                        history.append({"role": "model", "parts": [{"text": response.text}]})
-                        if len(history) > self.history_max_length:
-                            history = history[-self.history_max_length:]
-                        self.chat_histories[user_id] = history
-                    else:
-                        self.cache[cache_key] = response.text
-                        if len(self.cache) > self.cache_max_size:
-                            self.cache.popitem(last=False)
+            logger.debug("Prompting %s: %s", model_name, prompt)
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=self.config
+                )
+                
+                if not response.text:
+                    continue
+                
+                if user_id:
+                    history.append({"role": "user", "parts": [{"text": prompt}]})
+                    history.append({"role": "model", "parts": [{"text": response.text}]})
+                    if len(history) > self.history_max_length:
+                        history = history[-self.history_max_length:]
+                    self.chat_histories[user_id] = history
+                else:
+                    self.cache[cache_key] = response.text
+                    if len(self.cache) > self.cache_max_size:
+                        self.cache.popitem(last=False)
                         
-                    return response.text
+                return response.text
 
-                except Exception as e:
-                    err_msg = str(e).upper()
-                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
-                        logger.warning("%s quota exhausted. Waiting 2s...", model_name)
-                        await asyncio.sleep(2)
-                        break # Try next model
-                    
-                    if "400" in err_msg and "CANNOT BE COMBINED" in err_msg:
-                        continue # Try the other config for this same model
-                    
-                    if i == len(self.models) - 1 and config_to_use == secondary_config:
-                        logger.exception("Final error calling %s", model_name)
-                        raise APIError(str(e))
-                    
-                    logger.warning("Error calling %s with %s tools: %s", model_name, "WoW" if config_to_use == self.wow_config else "Search", e)
-                    continue 
+            except Exception as e:
+                err_msg = str(e).upper()
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "QUOTA" in err_msg:
+                    logger.warning("%s quota exhausted. Waiting 2s...", model_name)
+                    await asyncio.sleep(2)
+                    continue # Try next model
+                
+                if i == len(self.models) - 1:
+                    logger.exception("Final error calling %s", model_name)
+                    raise APIError(str(e))
+                
+                logger.warning("Error calling %s: %s", model_name, e)
+                continue 
         
         return "I'm sorry, I couldn't generate a response."
 
@@ -442,7 +486,7 @@ class AIChat(commands.Cog):
                         )
                         # Use a fast model for this
                         response = await self.client.aio.models.generate_content(
-                            model=self.models[1] if len(self.models) > 1 else self.models[0], # Prefer 3.1 Flash Lite
+                            model=self.fast_model,
                             contents=text,
                             config=types.GenerateContentConfig(
                                 system_instruction=system_msg,
