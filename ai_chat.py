@@ -76,6 +76,18 @@ class AIChat(commands.Cog):
 
         self._session: Optional[aiohttp.ClientSession] = None  # shared HTTP session
 
+    def __deepcopy__(self, memo):
+        """Keep the google-genai SDK from cloning the cog.
+
+        generate_content() deep-copies GenerateContentConfig on every call,
+        which would deep-copy these bound tool methods and with them the whole
+        cog (bot, aiohttp session, asyncio tasks) — crashing with
+        "cannot pickle '_asyncio.TaskStepMethWrapper' object". Tools must call
+        the live cog anyway, so share self instead of cloning it.
+        """
+        memo[id(self)] = self
+        return self
+
     async def cog_load(self):
         self._session = aiohttp.ClientSession()
 
